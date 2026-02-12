@@ -1,0 +1,50 @@
+bundle:
+  name: docx-skills-agent
+
+variables:
+  app_name:
+    description: Databricks App name
+    default: docx-skills-agent
+  serving_endpoint_name:
+    description: Databricks model serving endpoint used by the app
+    default: databricks-gpt-5-2
+  trace_experiment_path:
+    description: MLflow experiment path used for agent traces
+    default: /Users/brennan.beal@databricks.com/docx-skills-agent-traces
+
+sync:
+  include:
+    - app.py
+    - app.yml
+    - start_server.py
+    - pyproject.toml
+    - uv.lock
+    - src/**
+    - .claude/skills/**
+
+resources:
+  experiments:
+    document_agent_traces:
+      name: ${var.trace_experiment_path}
+
+  apps:
+    document_agent:
+      name: ${var.app_name}
+      description: ResponsesAgent-powered document assistant with LangGraph tools
+      source_code_path: .
+      resources:
+        - name: serving-endpoint
+          serving_endpoint:
+            name: ${var.serving_endpoint_name}
+            permission: CAN_QUERY
+
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      profile: FEVM
+
+  prod:
+    mode: production
+

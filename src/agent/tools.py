@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+from databricks.sdk import WorkspaceClient
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from databricks_langchain import ChatDatabricks
 
 from .config import AgentConfig
+
+logger = logging.getLogger(__name__)
 
 
 # Store the last execute_python result for use by save_to_volume
@@ -20,8 +24,22 @@ _last_execute_result: dict[str, str] = {}
 
 def create_llm(config: AgentConfig) -> ChatDatabricks:
     """Create a ChatDatabricks LLM instance."""
+    if config.is_running_in_databricks:
+        workspace_client = WorkspaceClient()
+        logger.info("Initializing ChatDatabricks with runtime identity")
+    elif config.databricks_profile:
+        workspace_client = WorkspaceClient(profile=config.databricks_profile)
+        logger.info(
+            "Initializing ChatDatabricks with Databricks CLI profile '%s'",
+            config.databricks_profile,
+        )
+    else:
+        workspace_client = WorkspaceClient()
+        logger.info("Initializing ChatDatabricks with default local Databricks auth")
+
     return ChatDatabricks(
         endpoint=config.model_endpoint,
+        workspace_client=workspace_client,
         temperature=0.1,
         # Note: responses_api=True enables Databricks' built-in code execution
         # which conflicts with our custom tools. Keep it False for custom tools.
