@@ -13,6 +13,11 @@ dependencies = [
     "lxml>=5.0.0",
     "python-docx>=1.1.0",
     "databricks-sdk>=0.20.0",
+    # For agent deployment
+    "mlflow[genai]>=3.6.0",
+    "databricks-agents>=1.1.0",
+    "uvicorn>=0.30.0",
+    "fastapi>=0.115.0",
 ]
 
 [project.scripts]

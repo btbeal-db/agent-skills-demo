@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+# Enable debug output for local development
+os.environ["AGENT_DEBUG"] = "true"
 
 # Add src to path for local development
 sys.path.insert(0, str(Path(__file__).parent / "src"))

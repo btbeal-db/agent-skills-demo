@@ -27,8 +27,14 @@ class AgentConfig:
     # Local output directory (used when running outside Databricks)
     local_output_dir: str = "./output"
     
-    # Skills configuration
+    # Skills configuration - accepts str or Path
     skills_directory: Path = field(default_factory=lambda: Path(".claude/skills"))
+    
+    def __setattr__(self, name: str, value):
+        """Convert skills_directory to Path if string is passed."""
+        if name == "skills_directory" and isinstance(value, str):
+            value = Path(value)
+        super().__setattr__(name, value)
     
     # Agent configuration
     max_iterations: int = 10
@@ -38,8 +44,10 @@ class AgentConfig:
     
     def __post_init__(self):
         """Set up Databricks SDK profile via environment variable."""
-        # The Databricks SDK uses DATABRICKS_CONFIG_PROFILE to select the profile
-        os.environ["DATABRICKS_CONFIG_PROFILE"] = self.databricks_profile
+        # Only set profile if provided and not running in Databricks
+        # (Databricks runtime uses default authentication)
+        if self.databricks_profile and not self.is_running_in_databricks:
+            os.environ["DATABRICKS_CONFIG_PROFILE"] = self.databricks_profile
         
         # Generate session ID if not provided
         if self.session_id is None:
@@ -49,7 +57,11 @@ class AgentConfig:
     def is_running_in_databricks(self) -> bool:
         """Check if we're running inside Databricks runtime."""
         # Databricks runtime sets DATABRICKS_RUNTIME_VERSION
-        return "DATABRICKS_RUNTIME_VERSION" in os.environ
+        # Model Serving also sets specific env vars
+        return (
+            "DATABRICKS_RUNTIME_VERSION" in os.environ
+            or "IS_SERVERLESS" in os.environ  # Model Serving
+        )
     
     @property
     def session_output_path(self) -> str:

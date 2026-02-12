@@ -1,0 +1,35 @@
+# Databricks App configuration for the DOCX Skills Agent
+# See: https://docs.databricks.com/aws/en/dev-tools/databricks-apps/configuration.html
+
+name: docx-skills-agent
+description: AI agent with document creation skills using python-docx
+
+# App entry point
+entrypoint: app:app
+
+# Environment variables
+env:
+  - name: SERVING_ENDPOINT_NAME
+    description: The Databricks model serving endpoint for the LLM
+    default: databricks-gpt-5-2
+  - name: UC_VOLUME_PATH
+    description: Unity Catalog volume path for storing created documents
+    default: /Volumes/btbeal/docx_agent_skills_demo/created_docs
+  - name: SKILLS_DIR
+    description: Path to the skills directory
+    default: .claude/skills
+  - name: AGENT_DEBUG
+    description: Enable debug logging
+    default: "false"
+
+# Compute configuration
+compute:
+  size: medium  # Options: small, medium, large
+
+# Resources that need to be accessible by the app
+resources:
+  - name: serving-endpoint
+    type: serving_endpoint
+    serving_endpoint_name: databricks-gpt-5-2
+    permission: CAN_QUERY
+

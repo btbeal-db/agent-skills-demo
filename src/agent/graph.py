@@ -1,13 +1,13 @@
-"""LangGraph workflow for the agent with Claude Skills integration."""
+"""LangGraph workflow for the document agent with Claude Skills integration."""
 
 from __future__ import annotations
 
-from typing import Annotated, TypedDict
+import os
+from typing import Annotated, Literal, TypedDict
 
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
-    HumanMessage,
     SystemMessage,
     ToolMessage,
 )
@@ -25,29 +25,28 @@ from .nodes import (
 
 class AgentState(TypedDict):
     """State for the agent workflow."""
+
     messages: Annotated[list[BaseMessage], add_messages]
     iteration_count: int
 
 
-def create_agent_graph(config: AgentConfig | None = None):
-    """Create the LangGraph agent workflow.
-    
-    This graph implements a ReAct-style agent loop:
-    1. Process user input
-    2. Call LLM with tool definitions
-    3. If LLM wants to use tools, execute them and loop back
-    4. If LLM has final answer, return it
-    """
-    if config is None:
-        config = AgentConfig()
-    
-    llm = create_llm(config)
-    skill_context = build_skill_context(config)
-    
-    # System prompt with skill awareness
-    system_prompt = f"""You are a helpful AI assistant with access to specialized skills and Unity Catalog storage.
+class DocumentAgent:
+    """LangGraph-based document agent with tool-calling workflow."""
 
-{skill_context}
+    def __init__(self, config: AgentConfig | None = None):
+        self.config = config or AgentConfig()
+        self.llm = create_llm(self.config)
+        self.skill_context = build_skill_context(self.config)
+        self.system_prompt = self._build_system_prompt()
+        # Toggle verbose execution logs with AGENT_DEBUG=true
+        self.debug = os.environ.get("AGENT_DEBUG", "false").lower() == "true"
+        self._compiled_graph = None
+
+    def _build_system_prompt(self) -> str:
+        """Build the system prompt with skill and storage context."""
+        return f"""You are a helpful AI assistant with access to specialized skills and Unity Catalog storage.
+
+{self.skill_context}
 
 ## How to Use Skills
 
@@ -60,7 +59,7 @@ def create_agent_graph(config: AgentConfig | None = None):
 ## File Output
 
 All generated files are saved to Unity Catalog Volume:
-- Session path: {config.session_output_path}
+- Session path: {self.config.session_output_path}
 - Use `save_to_volume` with base64-encoded content
 
 ## Guidelines
@@ -72,57 +71,64 @@ All generated files are saved to Unity Catalog Volume:
 - If a skill isn't appropriate for the task, explain what you can and cannot do
 """
 
-    def agent_node(state: AgentState) -> AgentState:
+    def _log(self, message: str) -> None:
+        if self.debug:
+            print(message, flush=True)
+
+    def _ensure_system_prompt(self, messages: list[BaseMessage]) -> list[BaseMessage]:
+        """Ensure the agent's canonical system prompt is present as the first message."""
+        if messages and isinstance(messages[0], SystemMessage) and messages[0].content == self.system_prompt:
+            return messages
+        return [SystemMessage(content=self.system_prompt), *messages]
+
+    def agent_node(self, state: AgentState) -> AgentState:
         """Main agent node - calls the LLM with tools."""
-        messages = state["messages"]
+        messages = self._ensure_system_prompt(state["messages"])
         iteration = state.get("iteration_count", 0)
-        
-        print(f"  [agent_node] Iteration {iteration + 1}, {len(messages)} messages", flush=True)
-        
-        # Add system message if not present
-        if not messages or not isinstance(messages[0], SystemMessage):
-            messages = [SystemMessage(content=system_prompt)] + list(messages)
-        
-        # Call LLM with tools
-        print(f"  [agent_node] Calling LLM...", flush=True)
+
+        self._log(f"  [agent_node] Iteration {iteration + 1}, {len(messages)} messages")
+
+        self._log("  [agent_node] Calling LLM...")
         try:
-            response = llm.invoke(
+            response = self.llm.invoke(
                 messages,
                 tools=AGENT_TOOLS,
             )
-            print(f"  [agent_node] LLM responded. Has tool_calls: {bool(response.tool_calls) if hasattr(response, 'tool_calls') else 'N/A'}", flush=True)
+            has_tools = bool(response.tool_calls) if hasattr(response, "tool_calls") else False
+            self._log(f"  [agent_node] LLM responded. Has tool_calls: {has_tools}")
         except Exception as e:
             print(f"  [agent_node] LLM ERROR: {e}", flush=True)
             raise
-        
+
         return {
             "messages": [response],
             "iteration_count": iteration + 1,
         }
 
-    def tool_node(state: AgentState) -> AgentState:
+    def tool_node(self, state: AgentState) -> AgentState:
         """Execute tool calls from the LLM response."""
         messages = state["messages"]
+        if not messages:
+            return {"messages": [], "iteration_count": state.get("iteration_count", 0)}
+
         last_message = messages[-1]
-        
-        tool_messages = []
-        
+        tool_messages: list[ToolMessage] = []
+
         if isinstance(last_message, AIMessage) and last_message.tool_calls:
-            print(f"  [tool_node] Executing {len(last_message.tool_calls)} tool(s)", flush=True)
+            self._log(f"  [tool_node] Executing {len(last_message.tool_calls)} tool(s)")
             for tool_call in last_message.tool_calls:
                 tool_name = tool_call["name"]
                 tool_args = tool_call["args"]
                 tool_id = tool_call["id"]
-                
-                print(f"    -> {tool_name}({list(tool_args.keys())})", flush=True)
-                
-                # Execute the tool
-                result = handle_tool_call(config, tool_name, tool_args)
-                
-                # Truncate result for display
-                result_preview = result[:100] + "..." if len(result) > 100 else result
-                print(f"    <- {result_preview}", flush=True)
-                
+
+                self._log(f"    -> {tool_name}({list(tool_args.keys())})")
+
+                result = handle_tool_call(self.config, tool_name, tool_args)
+
+                if self.debug:
+                    result_preview = result[:100] + "..." if len(result) > 100 else result
+                    self._log(f"    <- {result_preview}")
+
                 tool_messages.append(
                     ToolMessage(
                         content=result,
@@ -130,72 +136,68 @@ All generated files are saved to Unity Catalog Volume:
                     )
                 )
         else:
-            print(f"  [tool_node] No tool calls to execute", flush=True)
-        
-        return {"messages": tool_messages, "iteration_count": state["iteration_count"]}
+            self._log("  [tool_node] No tool calls to execute")
 
-    def should_continue(state: AgentState) -> str:
+        return {"messages": tool_messages, "iteration_count": state.get("iteration_count", 0)}
+
+    def should_continue(self, state: AgentState) -> Literal["tools", "end"]:
         """Determine if the agent should continue or end."""
         messages = state["messages"]
+        if not messages:
+            self._log("  [router] -> end (no messages)")
+            return "end"
+
         last_message = messages[-1]
         iteration = state.get("iteration_count", 0)
-        
-        # Stop if max iterations reached
-        if iteration >= config.max_iterations:
-            print(f"  [router] -> end (max iterations)", flush=True)
+
+        if iteration >= self.config.max_iterations:
+            self._log("  [router] -> end (max iterations)")
             return "end"
-        
-        # If the last message has tool calls, continue to tool execution
+
         if isinstance(last_message, AIMessage) and last_message.tool_calls:
-            print(f"  [router] -> tools", flush=True)
+            self._log("  [router] -> tools")
             return "tools"
-        
-        # Otherwise, end the conversation
-        print(f"  [router] -> end (no tool calls)", flush=True)
+
+        self._log("  [router] -> end (no tool calls)")
         return "end"
 
-    # Build the graph
-    workflow = StateGraph(AgentState)
-    
-    # Add nodes
-    workflow.add_node("agent", agent_node)
-    workflow.add_node("tools", tool_node)
-    
-    # Set entry point
-    workflow.set_entry_point("agent")
-    
-    # Add conditional edges
-    workflow.add_conditional_edges(
-        "agent",
-        should_continue,
-        {
-            "tools": "tools",
-            "end": END,
-        }
-    )
-    
-    # Tools always go back to agent
-    workflow.add_edge("tools", "agent")
-    
-    # Compile and return
-    return workflow.compile()
+    def build(self):
+        """Build and compile the LangGraph workflow."""
+        if self._compiled_graph is not None:
+            return self._compiled_graph
 
+        workflow = StateGraph(AgentState)
 
-def run_agent(user_message: str, config: AgentConfig | None = None) -> str:
-    """Convenience function to run the agent with a single message."""
-    graph = create_agent_graph(config)
-    
-    initial_state = {
-        "messages": [HumanMessage(content=user_message)],
-        "iteration_count": 0,
-    }
-    
-    result = graph.invoke(initial_state)
-    
-    # Get the last AI message
-    for message in reversed(result["messages"]):
-        if isinstance(message, AIMessage):
-            return message.content
-    
-    return "No response generated"
+        # Add nodes
+        workflow.add_node("agent", self.agent_node)
+        workflow.add_node("tools", self.tool_node)
+
+        # Set entry point
+        workflow.set_entry_point("agent")
+
+        # Add conditional edges
+        workflow.add_conditional_edges(
+            "agent",
+            self.should_continue,
+            {
+                "tools": "tools",
+                "end": END,
+            },
+        )
+
+        # Tools always go back to agent
+        workflow.add_edge("tools", "agent")
+
+        self._compiled_graph = workflow.compile()
+        return self._compiled_graph
+
+    def invoke(self, messages: list[BaseMessage], iteration_count: int = 0):
+        """Invoke the agent graph with the provided messages."""
+        prepared_messages = self._ensure_system_prompt(messages)
+        return self.build().invoke(
+            {
+                "messages": prepared_messages,
+                "iteration_count": iteration_count,
+            }
+        )
 
