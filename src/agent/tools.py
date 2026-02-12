@@ -1,4 +1,4 @@
-"""LangGraph nodes for the agent workflow."""
+"""Tool implementations for the document agent workflow."""
 
 from __future__ import annotations
 

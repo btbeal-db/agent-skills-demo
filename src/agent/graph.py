@@ -16,7 +16,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
 from .config import AgentConfig
-from .nodes import (
+from .tools import (
     AGENT_TOOLS,
     build_skill_context,
     create_llm,

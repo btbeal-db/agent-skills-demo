@@ -56,7 +56,7 @@ agent-skills-demo/
 │       ├── __init__.py
 │       ├── config.py            # Databricks, UC Volume & Skills configuration
 │       ├── graph.py             # LangGraph workflow definition
-│       └── nodes.py             # Tools: execute_python, save_to_volume, etc.
+│       └── tools.py             # Tools: execute_python, save_to_volume, etc.
 └── .claude/
     └── skills/
         └── docx/                # Python-only docx skill
