@@ -22,7 +22,7 @@ class DocumentResponsesAgent(ResponsesAgent):
     """MLflow ResponsesAgent wrapper for DocumentAgent."""
 
     def __init__(self, config: AgentConfig | None = None, chunk_size: int = 50):
-        self.config = config or AgentConfig()
+        self.config = config or AgentConfig.from_env()
         self.document_agent = DocumentAgent(self.config)
         self.chunk_size = chunk_size
 

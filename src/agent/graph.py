@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import os
+import logging
 from typing import Annotated, Literal, TypedDict
 
+import mlflow
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -22,6 +23,8 @@ from .nodes import (
     handle_tool_call,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class AgentState(TypedDict):
     """State for the agent workflow."""
@@ -34,12 +37,10 @@ class DocumentAgent:
     """LangGraph-based document agent with tool-calling workflow."""
 
     def __init__(self, config: AgentConfig | None = None):
-        self.config = config or AgentConfig()
+        self.config = config or AgentConfig.from_env()
         self.llm = create_llm(self.config)
         self.skill_context = build_skill_context(self.config)
         self.system_prompt = self._build_system_prompt()
-        # Toggle verbose execution logs with AGENT_DEBUG=true
-        self.debug = os.environ.get("AGENT_DEBUG", "false").lower() == "true"
         self._compiled_graph = None
 
     def _build_system_prompt(self) -> str:
@@ -71,33 +72,28 @@ All generated files are saved to Unity Catalog Volume:
 - If a skill isn't appropriate for the task, explain what you can and cannot do
 """
 
-    def _log(self, message: str) -> None:
-        if self.debug:
-            print(message, flush=True)
-
     def _ensure_system_prompt(self, messages: list[BaseMessage]) -> list[BaseMessage]:
         """Ensure the agent's canonical system prompt is present as the first message."""
         if messages and isinstance(messages[0], SystemMessage) and messages[0].content == self.system_prompt:
             return messages
         return [SystemMessage(content=self.system_prompt), *messages]
 
+    @mlflow.trace
     def agent_node(self, state: AgentState) -> AgentState:
         """Main agent node - calls the LLM with tools."""
         messages = self._ensure_system_prompt(state["messages"])
         iteration = state.get("iteration_count", 0)
 
-        self._log(f"  [agent_node] Iteration {iteration + 1}, {len(messages)} messages")
-
-        self._log("  [agent_node] Calling LLM...")
+        logger.info("[agent_node] Iteration %s with %s message(s)", iteration + 1, len(messages))
         try:
             response = self.llm.invoke(
                 messages,
                 tools=AGENT_TOOLS,
             )
             has_tools = bool(response.tool_calls) if hasattr(response, "tool_calls") else False
-            self._log(f"  [agent_node] LLM responded. Has tool_calls: {has_tools}")
+            logger.info("[agent_node] LLM responded. tool_calls=%s", has_tools)
         except Exception as e:
-            print(f"  [agent_node] LLM ERROR: {e}", flush=True)
+            logger.exception("[agent_node] LLM invocation failed")
             raise
 
         return {
@@ -105,6 +101,7 @@ All generated files are saved to Unity Catalog Volume:
             "iteration_count": iteration + 1,
         }
 
+    @mlflow.trace
     def tool_node(self, state: AgentState) -> AgentState:
         """Execute tool calls from the LLM response."""
         messages = state["messages"]
@@ -115,19 +112,17 @@ All generated files are saved to Unity Catalog Volume:
         tool_messages: list[ToolMessage] = []
 
         if isinstance(last_message, AIMessage) and last_message.tool_calls:
-            self._log(f"  [tool_node] Executing {len(last_message.tool_calls)} tool(s)")
+            logger.info("[tool_node] Executing %s tool call(s)", len(last_message.tool_calls))
             for tool_call in last_message.tool_calls:
                 tool_name = tool_call["name"]
                 tool_args = tool_call["args"]
                 tool_id = tool_call["id"]
 
-                self._log(f"    -> {tool_name}({list(tool_args.keys())})")
+                logger.info("[tool_node] Running tool '%s'", tool_name)
 
                 result = handle_tool_call(self.config, tool_name, tool_args)
 
-                if self.debug:
-                    result_preview = result[:100] + "..." if len(result) > 100 else result
-                    self._log(f"    <- {result_preview}")
+                logger.info("[tool_node] Tool '%s' completed", tool_name)
 
                 tool_messages.append(
                     ToolMessage(
@@ -135,30 +130,27 @@ All generated files are saved to Unity Catalog Volume:
                         tool_call_id=tool_id,
                     )
                 )
-        else:
-            self._log("  [tool_node] No tool calls to execute")
-
         return {"messages": tool_messages, "iteration_count": state.get("iteration_count", 0)}
 
     def should_continue(self, state: AgentState) -> Literal["tools", "end"]:
         """Determine if the agent should continue or end."""
         messages = state["messages"]
         if not messages:
-            self._log("  [router] -> end (no messages)")
+            logger.info("[router] Ending run (no messages in state)")
             return "end"
 
         last_message = messages[-1]
         iteration = state.get("iteration_count", 0)
 
         if iteration >= self.config.max_iterations:
-            self._log("  [router] -> end (max iterations)")
+            logger.info("[router] Ending run (max iterations=%s)", self.config.max_iterations)
             return "end"
 
         if isinstance(last_message, AIMessage) and last_message.tool_calls:
-            self._log("  [router] -> tools")
+            logger.info("[router] Continuing to tools")
             return "tools"
 
-        self._log("  [router] -> end (no tool calls)")
+        logger.info("[router] Ending run (final assistant response)")
         return "end"
 
     def build(self):
@@ -166,6 +158,7 @@ All generated files are saved to Unity Catalog Volume:
         if self._compiled_graph is not None:
             return self._compiled_graph
 
+        logger.info("Compiling DocumentAgent graph")
         workflow = StateGraph(AgentState)
 
         # Add nodes
@@ -191,9 +184,15 @@ All generated files are saved to Unity Catalog Volume:
         self._compiled_graph = workflow.compile()
         return self._compiled_graph
 
+    @mlflow.trace
     def invoke(self, messages: list[BaseMessage], iteration_count: int = 0):
         """Invoke the agent graph with the provided messages."""
         prepared_messages = self._ensure_system_prompt(messages)
+        logger.info(
+            "Invoking DocumentAgent with %s input message(s), iteration_count=%s",
+            len(prepared_messages),
+            iteration_count,
+        )
         return self.build().invoke(
             {
                 "messages": prepared_messages,

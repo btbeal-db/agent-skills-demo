@@ -9,18 +9,18 @@ entrypoint: app:app
 
 # Environment variables
 env:
-  - name: SERVING_ENDPOINT_NAME
+  - name: AGENT_MODEL_ENDPOINT
     description: The Databricks model serving endpoint for the LLM
     default: databricks-gpt-5-2
-  - name: UC_VOLUME_PATH
+  - name: AGENT_UC_VOLUME_PATH
     description: Unity Catalog volume path for storing created documents
     default: /Volumes/btbeal/docx_agent_skills_demo/created_docs
-  - name: SKILLS_DIR
+  - name: AGENT_SKILLS_DIR
     description: Path to the skills directory
     default: .claude/skills
-  - name: AGENT_DEBUG
-    description: Enable debug logging
-    default: "false"
+  - name: AGENT_MAX_ITERATIONS
+    description: Maximum ReAct loops per request
+    default: "10"
 
 # Compute configuration
 compute:

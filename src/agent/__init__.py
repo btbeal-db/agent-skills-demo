@@ -1,7 +1,8 @@
 """Agent Skills Demo - LangGraph + Databricks + Claude Skills integration."""
 
-from .graph import create_agent_graph
 from .config import AgentConfig
+from .graph import DocumentAgent
+from .responses_agent import DocumentResponsesAgent
 
-__all__ = ["create_agent_graph", "AgentConfig"]
+__all__ = ["AgentConfig", "DocumentAgent", "DocumentResponsesAgent"]
 

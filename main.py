@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
-
-# Enable debug output for local development
-os.environ["AGENT_DEBUG"] = "true"
 
 # Add src to path for local development
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from agent import AgentConfig, create_agent_graph
+from agent import AgentConfig, DocumentAgent
 
 
 def main():
@@ -23,7 +19,7 @@ def main():
     print("=" * 60)
     
     # Initialize config
-    config = AgentConfig()
+    config = AgentConfig.from_env()
     
     print(f"\nDatabricks Profile: {config.databricks_profile}")
     print(f"Model Endpoint: {config.model_endpoint}")
@@ -35,7 +31,7 @@ def main():
     print("-" * 60)
     
     # Create the graph once for reuse
-    graph = create_agent_graph(config)
+    agent = DocumentAgent(config)
     
     while True:
         try:
@@ -54,10 +50,7 @@ def main():
             from langchain_core.messages import HumanMessage, AIMessage
             
             try:
-                result = graph.invoke({
-                    "messages": [HumanMessage(content=user_input)],
-                    "iteration_count": 0,
-                })
+                result = agent.invoke([HumanMessage(content=user_input)], iteration_count=0)
                 
                 print(f"--- Done ({len(result['messages'])} messages) ---\n")
                 
