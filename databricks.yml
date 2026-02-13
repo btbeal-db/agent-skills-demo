@@ -6,9 +6,6 @@ variables:
     default: "databricks-gpt-5-2"
   agent_uc_volume_path:
     default: "hls_amer_catalog.appeals-review.created_docs_dev"
-  app_service_principal_id:
-    description: Application ID for the Databricks App service principal.
-    default: "e1dbe458-d77d-47c3-bb13-eb7e85f2240a"
   app_name:
     description: Databricks App name
     default: docx-skills-agent
@@ -27,9 +24,7 @@ resources:
     tracking_exp:
       name: /Workspace/Users/brennan.beal@databricks.com/${bundle.name}-${bundle.target}
       permissions:
-        - level: CAN_EDIT
-          service_principal_name: ${var.app_service_principal_id}
-        - level: CAN_READ
+        - level: CAN_MANAGE
           group_name: users
   apps:
     document_agent:
