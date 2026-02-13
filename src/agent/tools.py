@@ -61,14 +61,18 @@ def build_skill_context(config: AgentConfig) -> str:
     skills_info = []
     for skill_name in config.available_skills:
         metadata = config.load_skill_metadata(skill_name)
-        if metadata:
-            name = metadata.get("name", skill_name)
-            description = metadata.get("description", "No description available")
-            skills_info.append(f"- **{name}**: {description}")
+        name = metadata.get("name", skill_name) if metadata else skill_name
+        description = (
+            metadata.get("description", "No description available")
+            if metadata
+            else "No description available"
+        )
+        skills_info.append(f"- **{name}**: {description}")
     
     if not skills_info:
         return ""
     
+    skills_dirs = ", ".join(str(path) for path in config.skill_directories)
     return f"""
 ## Available Skills
 
@@ -78,13 +82,33 @@ you should use that skill's capabilities.
 {chr(10).join(skills_info)}
 
 To use a skill, first load its instructions, then use the provided Python functions.
-Skills are located at: {config.skills_directory}
+Skills are located at: {skills_dirs}
 
 ## File Output
 
 When you create documents, save them using the `save_to_volume` tool.
 Files will be saved to: {config.session_output_path}
 """
+
+
+def list_skills(config: AgentConfig) -> dict[str, Any]:
+    """Enumerate skills discovered on disk."""
+    skills = []
+    for skill_name in config.available_skills:
+        metadata = config.load_skill_metadata(skill_name)
+        skills.append(
+            {
+                "id": skill_name,
+                "name": metadata.get("name", skill_name),
+                "description": metadata.get("description", "No description available"),
+                "path": str(config.get_skill_path(skill_name)),
+            }
+        )
+    return {
+        "skills": skills,
+        "count": len(skills),
+        "skill_directories": [str(path) for path in config.skill_directories],
+    }
 
 
 def load_skill_instructions(config: AgentConfig, skill_name: str) -> str:
@@ -356,6 +380,17 @@ AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "list_skills",
+            "description": "Scan the skills directories and return all available skills. Use this when asked what skills are available.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "load_skill",
             "description": "Load the full instructions for a skill to understand how to use it. Always call this before using a skill.",
             "parameters": {
@@ -450,6 +485,18 @@ def handle_tool_call(
 ) -> str:
     """Handle a tool call from the LLM."""
     
+    if tool_name == "list_skills":
+        result = list_skills(config)
+        if not result["skills"]:
+            dirs = ", ".join(result["skill_directories"])
+            return f"No skills found in configured directories: {dirs}"
+        lines = []
+        for skill in result["skills"]:
+            lines.append(
+                f"- {skill['name']} ({skill['id']}): {skill['description']} [path: {skill['path']}]"
+            )
+        return "Available skills discovered from disk:\n" + "\n".join(lines)
+
     if tool_name == "load_skill":
         skill_name = tool_args.get("skill_name", "")
         instructions = load_skill_instructions(config, skill_name)

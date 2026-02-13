@@ -62,7 +62,7 @@ resources:
           - name: AGENT_OUTPUT_MODE
             value: "uc_volume"
           - name: AGENT_SKILLS_DIR
-            value: "./claude/skills"
+            value: "./.claude/skills"
           - name: AGENT_MAX_ITERATIONS
             value: "10"
 

@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+DEFAULT_SKILLS_DIR = "./.claude/skills"
+
 
 @dataclass
 class AgentConfig:
@@ -29,7 +31,7 @@ class AgentConfig:
     output_mode: str = "auto"  # auto | uc_volume | local
 
     # Skills configuration - accepts str or Path
-    skills_directory: Path = field(default_factory=lambda: Path(".claude/skills"))
+    skills_directory: Path = field(default_factory=lambda: Path(DEFAULT_SKILLS_DIR))
 
     def __setattr__(self, name: str, value):
         """Convert skills_directory to Path if string is passed."""
@@ -87,7 +89,10 @@ class AgentConfig:
             ),
             local_output_dir=os.getenv("AGENT_LOCAL_OUTPUT_DIR", "./output"),
             output_mode=os.getenv("AGENT_OUTPUT_MODE", "auto").strip().lower(),
-            skills_directory=os.getenv("AGENT_SKILLS_DIR", os.getenv("SKILLS_DIR", ".claude/skills")),
+            skills_directory=os.getenv(
+                "AGENT_SKILLS_DIR",
+                os.getenv("SKILLS_DIR", DEFAULT_SKILLS_DIR),
+            ),
             max_iterations=cls._env_int("AGENT_MAX_ITERATIONS", 10),
             session_id=os.getenv("AGENT_SESSION_ID"),
         )
@@ -136,17 +141,33 @@ class AgentConfig:
         return f"{self.local_output_dir}/{self.session_id}"
 
     @property
+    def skill_directories(self) -> list[Path]:
+        """Return configured skill directory."""
+        return [self.skills_directory]
+
+    @property
     def available_skills(self) -> list[str]:
-        """List available skills in the skills directory."""
-        if not self.skills_directory.exists():
-            return []
-        return [
-            d.name for d in self.skills_directory.iterdir()
-            if d.is_dir() and (d / "SKILL.md").exists()
-        ]
+        """List available skills discovered across configured skill directories."""
+        skills: list[str] = []
+        seen: set[str] = set()
+        for skills_dir in self.skill_directories:
+            if not skills_dir.exists():
+                continue
+            for entry in sorted(skills_dir.iterdir()):
+                if not entry.is_dir() or not (entry / "SKILL.md").exists():
+                    continue
+                if entry.name in seen:
+                    continue
+                seen.add(entry.name)
+                skills.append(entry.name)
+        return skills
 
     def get_skill_path(self, skill_name: str) -> Path:
-        """Get the path to a specific skill."""
+        """Get the path to a specific skill from known skill directories."""
+        for skills_dir in self.skill_directories:
+            candidate = skills_dir / skill_name
+            if (candidate / "SKILL.md").exists():
+                return candidate
         return self.skills_directory / skill_name
 
     def load_skill_metadata(self, skill_name: str) -> dict:
