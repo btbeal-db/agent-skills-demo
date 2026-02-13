@@ -7,32 +7,7 @@ description: AI agent with document creation skills using python-docx
 # App start command
 command: ['python', 'start_server.py']
 
-# Environment variables
-env:
-  - name: AGENT_MODEL_ENDPOINT
-    description: The Databricks model serving endpoint for the LLM
-    default: databricks-gpt-5-2
-  - name: AGENT_UC_VOLUME_PATH
-    description: Unity Catalog volume path for storing created documents
-    default: /Volumes/hls_amer_catalog/appeals-review/created_docs
-  - name: AGENT_SKILLS_DIR
-    description: Path to the skills directory
-    default: .claude/skills
-  - name: AGENT_MAX_ITERATIONS
-    description: Maximum ReAct loops per request
-    default: "10"
-  - name: MLFLOW_EXPERIMENT_PATH
-    description: Workspace MLflow experiment path for trace logging
-    default: /Users/brennan.beal@databricks.com/docx-skills-agent-traces
-
 # Compute configuration
 compute:
   size: medium  # Options: small, medium, large
-
-# Resources that need to be accessible by the app
-resources:
-  - name: serving-endpoint
-    type: serving_endpoint
-    serving_endpoint_name: databricks-gpt-5-2
-    permission: CAN_QUERY
 

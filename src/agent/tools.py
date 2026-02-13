@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import logging
 import os
 from io import BytesIO
@@ -20,6 +21,15 @@ logger = logging.getLogger(__name__)
 
 # Store the last execute_python result for use by save_to_volume
 _last_execute_result: dict[str, str] = {}
+
+
+def _get_workspace_client(config: AgentConfig) -> WorkspaceClient:
+    """Create a workspace client using runtime identity or local profile."""
+    if config.is_running_in_databricks:
+        return WorkspaceClient()
+    if config.databricks_profile:
+        return WorkspaceClient(profile=config.databricks_profile)
+    return WorkspaceClient()
 
 
 def create_llm(config: AgentConfig) -> ChatDatabricks:
@@ -116,20 +126,35 @@ def save_to_uc_volume(
         dict with success status and file path or error
     """
     try:
-        # Handle base64-encoded content
+        # Handle bytes and base64-encoded content safely.
         if isinstance(content, str):
-            content = base64.b64decode(content)
+            try:
+                content = base64.b64decode(content, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                return {
+                    "success": False,
+                    "error": f"Invalid content_base64 payload: {exc}",
+                    "path": None,
+                }
         
         # Construct full path
         output_dir = config.session_output_path
         full_path = f"{output_dir}/{filename}"
-        
-        # Ensure directory exists and write file
-        # Using direct filesystem access (works in Databricks runtime)
-        os.makedirs(output_dir, exist_ok=True)
-        
-        with open(full_path, "wb") as f:
-            f.write(content)
+
+        if full_path.startswith("/Volumes/"):
+            # In Databricks Apps, use Files API for UC volume I/O.
+            workspace_client = _get_workspace_client(config)
+            try:
+                workspace_client.files.create_directory(output_dir)
+            except Exception:
+                # Directory may already exist.
+                pass
+            workspace_client.files.upload(full_path, BytesIO(content), overwrite=True)
+        else:
+            # Local development fallback.
+            os.makedirs(output_dir, exist_ok=True)
+            with open(full_path, "wb") as f:
+                f.write(content)
         
         return {
             "success": True,
@@ -162,9 +187,14 @@ def read_from_uc_volume(
     """
     try:
         full_path = f"{config.session_output_path}/{filename}"
-        
-        with open(full_path, "rb") as f:
-            content = f.read()
+
+        if full_path.startswith("/Volumes/"):
+            workspace_client = _get_workspace_client(config)
+            response = workspace_client.files.download(full_path)
+            content = response.contents.read() if response.contents is not None else b""
+        else:
+            with open(full_path, "rb") as f:
+                content = f.read()
         
         if return_base64:
             content = base64.b64encode(content).decode("utf-8")
@@ -198,7 +228,27 @@ def list_uc_volume_files(config: AgentConfig) -> dict[str, Any]:
     """
     try:
         output_dir = config.session_output_path
-        
+
+        if output_dir.startswith("/Volumes/"):
+            workspace_client = _get_workspace_client(config)
+            files = []
+            for entry in workspace_client.files.list_directory_contents(output_dir):
+                if not entry.is_directory:
+                    files.append(
+                        {
+                            "name": entry.name,
+                            "path": entry.path,
+                            "size_bytes": entry.file_size,
+                            "modified_time": entry.last_modified,
+                        }
+                    )
+            return {
+                "success": True,
+                "files": files,
+                "path": output_dir,
+                "count": len(files),
+            }
+
         if not os.path.exists(output_dir):
             return {
                 "success": True,
@@ -206,7 +256,7 @@ def list_uc_volume_files(config: AgentConfig) -> dict[str, Any]:
                 "path": output_dir,
                 "message": "Directory is empty or does not exist yet"
             }
-        
+
         files = []
         for f in os.listdir(output_dir):
             file_path = os.path.join(output_dir, f)
@@ -415,15 +465,21 @@ def handle_tool_call(
             
             # Handle the result - if it's base64 content, don't return the full thing
             if result["result"] is not None:
-                result_str = str(result["result"])
-                if len(result_str) > 500:
-                    # Large result (likely base64) - tell LLM to save it
-                    output += f"\nResult: <{len(result_str)} characters of data>"
-                    output += "\n\nThe 'result' variable contains the document as base64. Use save_to_volume to save it."
-                    # Store the result for the next save_to_volume call
-                    _last_execute_result["content"] = result_str
+                result_value = result["result"]
+                if isinstance(result_value, bytes):
+                    # Preserve binary payloads (e.g., .docx) by storing base64 for save_to_volume.
+                    encoded = base64.b64encode(result_value).decode("utf-8")
+                    _last_execute_result["content"] = encoded
+                    output += f"\nResult: <{len(result_value)} bytes of binary data>"
+                    output += "\n\nBinary result stored as base64. Use save_to_volume to save it."
                 else:
-                    output += f"\nResult: {result_str}"
+                    result_str = str(result_value)
+                    if len(result_str) > 500:
+                        output += f"\nResult: <{len(result_str)} characters of data>"
+                        output += "\n\nThe 'result' variable contains large data. Use save_to_volume to save it."
+                        _last_execute_result["content"] = result_str
+                    else:
+                        output += f"\nResult: {result_str}"
             
             if result["locals"]:
                 # Filter out large values from locals display

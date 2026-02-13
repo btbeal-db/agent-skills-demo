@@ -2,15 +2,21 @@ bundle:
   name: docx-skills-agent
 
 variables:
+  agent_model_endpoint:
+    default: "databricks-gpt-5-2"
+  app_env:
+    default: "dev"
+  agent_uc_volume_path:
+    default: "/Volumes/hls_amer_catalog/appeals-review/created_docs_dev"
+  agent_output_mode:
+    default: "uc_volume"
+  agent_skills_dir:
+    default: "./claude/skills"
+  agent_max_iterations:
+    default: "10"
   app_name:
     description: Databricks App name
     default: docx-skills-agent
-  serving_endpoint_name:
-    description: Databricks model serving endpoint used by the app
-    default: databricks-gpt-5-2
-  trace_experiment_path:
-    description: MLflow experiment path used for agent traces
-    default: /Users/brennan.beal@databricks.com/docx-skills-agent-traces
 
 sync:
   include:
@@ -25,26 +31,62 @@ sync:
 resources:
   experiments:
     document_agent_traces:
-      name: ${var.trace_experiment_path}
+      name: ${var.trace_experiment_path_dev}
 
   apps:
     document_agent:
       name: ${var.app_name}
       description: ResponsesAgent-powered document assistant with LangGraph tools
       source_code_path: .
+      config:
+        env:
+          - name: MLFLOW_EXPERIMENT_ID
+            value: ${var.mlflow_experiment_id}
+          - name: APP_ENV
+            value: ${var.app_env}
+          - name: AGENT_MODEL_ENDPOINT
+            value: ${var.agent_model_endpoint}
+          - name: AGENT_UC_VOLUME_PATH
+            value: ${var.agent_uc_volume_path}
+          - name: AGENT_OUTPUT_MODE
+            value: ${var.agent_output_mode}
+          - name: AGENT_SKILLS_DIR
+            value: ${var.agent_skills_dir}
+          - name: AGENT_MAX_ITERATIONS
+            value: ${var.agent_max_iterations}
       resources:
         - name: serving-endpoint
           serving_endpoint:
-            name: ${var.serving_endpoint_name}
+            name: ${var.agent_model_endpoint}
             permission: CAN_QUERY
+        - name: uc-volume-read
+          uc_securable:
+            securable_type: VOLUME
+            securable_full_name: ${var.agent_uc_volume_path}
+            permission: READ_VOLUME
+        - name: uc-volume-write
+          uc_securable:
+            securable_type: VOLUME
+            securable_full_name: ${var.agent_uc_volume_path}
+            permission: WRITE_VOLUME
 
 targets:
   dev:
     default: true
     mode: development
+    presets:
+      name_prefix: ""
     workspace:
       profile: FEVM
+    variables:
+      mlflow_experiment_id: "/Users/brennan.beal@databricks.com/dev-docx-skills-agent-traces"
+      app_env: "dev"
+      agent_uc_volume_path: ${var.agent_uc_volume_path}
 
   prod:
     mode: production
+    variables:
+      mlflow_experiment_id: "/Users/brennan.beal@databricks.com/prod-docx-skills-agent-traces"
+      app_env: "prod"
+      agent_uc_volume_path: "/Volumes/hls_amer_catalog/appeals-review/created_docs"
 

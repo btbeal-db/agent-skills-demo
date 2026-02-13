@@ -22,10 +22,11 @@ class AgentConfig:
     model_endpoint: str = "databricks-gpt-5-2"
 
     # Unity Catalog Volume configuration for file output (used in Databricks)
-    uc_volume_path: str = "/Volumes/btbeal/docx_agent_skills_demo/created_docs"
+    uc_volume_path: str = "/Volumes/hls_amer_catalog/appeals-review/created_docs"
 
     # Local output directory (used when running outside Databricks)
     local_output_dir: str = "./output"
+    output_mode: str = "auto"  # auto | uc_volume | local
 
     # Skills configuration - accepts str or Path
     skills_directory: Path = field(default_factory=lambda: Path(".claude/skills"))
@@ -66,9 +67,10 @@ class AgentConfig:
             ),
             uc_volume_path=os.getenv(
                 "AGENT_UC_VOLUME_PATH",
-                os.getenv("UC_VOLUME_PATH", "/Volumes/btbeal/docx_agent_skills_demo/created_docs"),
+                os.getenv("UC_VOLUME_PATH", "/Volumes/hls_amer_catalog/appeals-review/created_docs"),
             ),
             local_output_dir=os.getenv("AGENT_LOCAL_OUTPUT_DIR", "./output"),
+            output_mode=os.getenv("AGENT_OUTPUT_MODE", "auto").strip().lower(),
             skills_directory=os.getenv("AGENT_SKILLS_DIR", os.getenv("SKILLS_DIR", ".claude/skills")),
             max_iterations=cls._env_int("AGENT_MAX_ITERATIONS", 10),
             session_id=os.getenv("AGENT_SESSION_ID"),
@@ -84,6 +86,9 @@ class AgentConfig:
         if self.max_iterations < 1:
             self.max_iterations = 1
 
+        if self.output_mode not in {"auto", "uc_volume", "local"}:
+            self.output_mode = "auto"
+
         # Generate session ID if not provided
         if self.session_id is None:
             self.session_id = str(uuid.uuid4())[:8]
@@ -92,10 +97,12 @@ class AgentConfig:
     def is_running_in_databricks(self) -> bool:
         """Check if we're running inside Databricks runtime."""
         # Databricks runtime sets DATABRICKS_RUNTIME_VERSION
-        # Model Serving also sets specific env vars
+        # Model Serving/Apps set additional env vars depending on execution environment.
         return (
             "DATABRICKS_RUNTIME_VERSION" in os.environ
-            or "IS_SERVERLESS" in os.environ  # Model Serving
+            or "IS_SERVERLESS" in os.environ
+            or "DATABRICKS_APP_NAME" in os.environ
+            or "DATABRICKS_APP_ID" in os.environ
         )
 
     @property
@@ -104,10 +111,13 @@ class AgentConfig:
 
         Uses UC Volume path in Databricks, local directory otherwise.
         """
+        if self.output_mode == "uc_volume":
+            return f"{self.uc_volume_path}/{self.session_id}"
+        if self.output_mode == "local":
+            return f"{self.local_output_dir}/{self.session_id}"
         if self.is_running_in_databricks:
             return f"{self.uc_volume_path}/{self.session_id}"
-        else:
-            return f"{self.local_output_dir}/{self.session_id}"
+        return f"{self.local_output_dir}/{self.session_id}"
 
     @property
     def available_skills(self) -> list[str]:

@@ -23,8 +23,14 @@ from agent import AgentConfig, DocumentResponsesAgent
 logger = logging.getLogger(__name__)
 
 _config = AgentConfig.from_env()
+# Databricks App serving should always persist outputs to UC Volume.
+_config.output_mode = "uc_volume"
 _responses_agent = DocumentResponsesAgent(config=_config)
-logger.info("Agent initialized. Output path: %s", _config.session_output_path)
+logger.info(
+    "Agent initialized. output_mode=%s output_path=%s",
+    _config.output_mode,
+    _config.session_output_path,
+)
 logger.info("Available skills: %s", _config.available_skills)
 
 
