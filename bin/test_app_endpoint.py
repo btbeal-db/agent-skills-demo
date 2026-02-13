@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Simple FEVM-authenticated test call to the deployed app server."""
 
+import argparse
 import json
 import subprocess
 import sys
@@ -9,7 +10,6 @@ import urllib.request
 
 APP_URL = "https://docx-skills-agent-1602460480284688.aws.databricksapps.com/invocations"
 PROFILE = "FEVM"
-PAYLOAD = {"input": [{"role": "user", "content": "Say hello in one sentence."}]}
 
 
 def _get_access_token() -> str:
@@ -29,11 +29,25 @@ def _get_access_token() -> str:
     return token_data["access_token"]
 
 
+def _build_payload(prompt: str) -> dict:
+    return {"input": [{"role": "user", "content": prompt}]}
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Send one prompt to the deployed app endpoint.")
+    parser.add_argument(
+        "prompt",
+        nargs="+",
+        help="Prompt text to send. Quotes are optional.",
+    )
+    args = parser.parse_args()
+    prompt_text = " ".join(args.prompt)
+
     token = _get_access_token()
+    payload = _build_payload(prompt_text)
     request = urllib.request.Request(
         APP_URL,
-        data=json.dumps(PAYLOAD).encode("utf-8"),
+        data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",

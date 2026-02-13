@@ -78,7 +78,6 @@ All generated files are saved to Unity Catalog Volume:
             return messages
         return [SystemMessage(content=self.system_prompt), *messages]
 
-    @mlflow.trace
     def agent_node(self, state: AgentState) -> AgentState:
         """Main agent node - calls the LLM with tools."""
         messages = self._ensure_system_prompt(state["messages"])
@@ -101,7 +100,6 @@ All generated files are saved to Unity Catalog Volume:
             "iteration_count": iteration + 1,
         }
 
-    @mlflow.trace
     def tool_node(self, state: AgentState) -> AgentState:
         """Execute tool calls from the LLM response."""
         messages = state["messages"]
@@ -184,7 +182,6 @@ All generated files are saved to Unity Catalog Volume:
         self._compiled_graph = workflow.compile()
         return self._compiled_graph
 
-    @mlflow.trace
     def invoke(self, messages: list[BaseMessage], iteration_count: int = 0):
         """Invoke the agent graph with the provided messages."""
         prepared_messages = self._ensure_system_prompt(messages)
