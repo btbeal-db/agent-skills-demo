@@ -6,6 +6,7 @@ import base64
 import binascii
 import logging
 import os
+import shutil
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 # Store the last execute_python result for use by save_to_volume
 _last_execute_result: dict[str, str] = {}
+# Store the last read_from_volume payload for use by execute_python.
+_last_read_from_volume: dict[str, Any] = {}
 
 
 def _get_workspace_client(config: AgentConfig) -> WorkspaceClient:
@@ -57,58 +60,23 @@ def create_llm(config: AgentConfig) -> ChatDatabricks:
 
 
 def build_skill_context(config: AgentConfig) -> str:
-    """Build system context from available skills."""
-    skills_info = []
-    for skill_name in config.available_skills:
-        metadata = config.load_skill_metadata(skill_name)
-        name = metadata.get("name", skill_name) if metadata else skill_name
-        description = (
-            metadata.get("description", "No description available")
-            if metadata
-            else "No description available"
-        )
-        skills_info.append(f"- **{name}**: {description}")
-    
-    if not skills_info:
+    """Build system context from complete skill definitions."""
+    skill_definitions = get_skill_definitions(config)
+    if not skill_definitions:
         return ""
-    
-    skills_dirs = ", ".join(str(path) for path in config.skill_directories)
+
+    skills_info = [
+        f"- **{skill['name']}**: {skill['description']}" for skill in skill_definitions
+    ]
     return f"""
 ## Available Skills
 
-You have access to the following skills. When a user request matches a skill's description, 
-you should use that skill's capabilities.
+You have access to the following skills:
 
 {chr(10).join(skills_info)}
 
-To use a skill, first load its instructions, then use the provided Python functions.
-Skills are located at: {skills_dirs}
-
-## File Output
-
-When you create documents, save them using the `save_to_volume` tool.
-Files will be saved to: {config.session_output_path}
+Use the `load_skill` tool when you need the full instructions for a specific skill.
 """
-
-
-def list_skills(config: AgentConfig) -> dict[str, Any]:
-    """Enumerate skills discovered on disk."""
-    skills = []
-    for skill_name in config.available_skills:
-        metadata = config.load_skill_metadata(skill_name)
-        skills.append(
-            {
-                "id": skill_name,
-                "name": metadata.get("name", skill_name),
-                "description": metadata.get("description", "No description available"),
-                "path": str(config.get_skill_path(skill_name)),
-            }
-        )
-    return {
-        "skills": skills,
-        "count": len(skills),
-        "skill_directories": [str(path) for path in config.skill_directories],
-    }
 
 
 def load_skill_instructions(config: AgentConfig, skill_name: str) -> str:
@@ -126,6 +94,41 @@ def load_skill_instructions(config: AgentConfig, skill_name: str) -> str:
             content = content[end_idx + 3:].strip()
     
     return content
+
+
+def get_skill_definitions(config: AgentConfig) -> list[dict[str, str]]:
+    """Build complete skill definitions from filesystem skills."""
+    skills: list[dict[str, str]] = []
+    for skill_id in config.available_skills:
+        metadata = config.load_skill_metadata(skill_id)
+        skills.append(
+            {
+                "id": skill_id,
+                "name": metadata.get("name", skill_id),
+                "description": metadata.get("description", "No description available"),
+                "content": load_skill_instructions(config, skill_id),
+                "path": str(config.get_skill_path(skill_id)),
+            }
+        )
+    return skills
+
+
+def list_skills(config: AgentConfig) -> dict[str, Any]:
+    """Enumerate complete skill definitions."""
+    skills = get_skill_definitions(config)
+    return {
+        "skills": [
+            {
+                "id": skill["id"],
+                "name": skill["name"],
+                "description": skill["description"],
+                "path": skill["path"],
+            }
+            for skill in skills
+        ],
+        "count": len(skills),
+        "skill_directories": [str(path) for path in config.skill_directories],
+    }
 
 
 # =============================================================================
@@ -305,6 +308,123 @@ def list_uc_volume_files(config: AgentConfig) -> dict[str, Any]:
         }
 
 
+def _safe_relative_path(path_value: str) -> str | None:
+    """Validate and normalize a relative file path."""
+    candidate = Path(path_value.strip())
+    if candidate.is_absolute() or ".." in candidate.parts:
+        return None
+    return candidate.as_posix()
+
+
+def copy_file_to_current_session(
+    config: AgentConfig,
+    source_path: str | None = None,
+    source_session_id: str | None = None,
+    filename: str | None = None,
+    target_filename: str | None = None,
+) -> dict[str, Any]:
+    """Copy a file from another session into the current session directory."""
+    try:
+        resolved_source_path = ""
+        if source_path and source_path.strip():
+            resolved_source_path = source_path.strip()
+        elif source_session_id and filename:
+            safe_filename = _safe_relative_path(filename)
+            if not safe_filename:
+                return {
+                    "success": False,
+                    "error": "filename must be a safe relative path",
+                    "source_path": None,
+                    "target_path": None,
+                }
+            if config.session_output_path.startswith("/Volumes/"):
+                resolved_source_path = f"{config.uc_volume_path}/{source_session_id.strip()}/{safe_filename}"
+            else:
+                resolved_source_path = f"{config.local_output_dir}/{source_session_id.strip()}/{safe_filename}"
+        else:
+            return {
+                "success": False,
+                "error": "Provide either source_path OR (source_session_id and filename)",
+                "source_path": None,
+                "target_path": None,
+            }
+
+        if config.session_output_path.startswith("/Volumes/"):
+            if not resolved_source_path.startswith(config.uc_volume_path + "/"):
+                return {
+                    "success": False,
+                    "error": f"source_path must be under {config.uc_volume_path}",
+                    "source_path": resolved_source_path,
+                    "target_path": None,
+                }
+
+            default_name = Path(resolved_source_path).name
+            desired_target = target_filename.strip() if target_filename else default_name
+            safe_target = _safe_relative_path(desired_target)
+            if not safe_target:
+                return {
+                    "success": False,
+                    "error": "target_filename must be a safe relative path",
+                    "source_path": resolved_source_path,
+                    "target_path": None,
+                }
+            target_path = f"{config.session_output_path}/{safe_target}"
+            target_dir = str(Path(target_path).parent)
+
+            workspace_client = _get_workspace_client(config)
+            response = workspace_client.files.download(resolved_source_path)
+            content = response.contents.read() if response.contents is not None else b""
+            workspace_client.files.create_directory(target_dir)
+            workspace_client.files.upload(target_path, BytesIO(content), overwrite=True)
+
+            return {
+                "success": True,
+                "source_path": resolved_source_path,
+                "target_path": target_path,
+                "message": f"Copied file into current session: {target_path}",
+            }
+
+        # Local development fallback
+        source_local = Path(resolved_source_path)
+        if not source_local.is_absolute():
+            source_local = Path.cwd() / source_local
+        if not source_local.exists() or not source_local.is_file():
+            return {
+                "success": False,
+                "error": f"Source file not found: {source_local}",
+                "source_path": str(source_local),
+                "target_path": None,
+            }
+
+        default_name = source_local.name
+        desired_target = target_filename.strip() if target_filename else default_name
+        safe_target = _safe_relative_path(desired_target)
+        if not safe_target:
+            return {
+                "success": False,
+                "error": "target_filename must be a safe relative path",
+                "source_path": str(source_local),
+                "target_path": None,
+            }
+        target_local = Path(config.session_output_path) / safe_target
+        target_local.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_local, target_local)
+
+        return {
+            "success": True,
+            "source_path": str(source_local),
+            "target_path": str(target_local),
+            "message": f"Copied file into current session: {target_local}",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "source_path": source_path,
+            "target_path": None,
+        }
+
+
 # =============================================================================
 # Python-based Document Operations (replaces shell/npm execution)
 # =============================================================================
@@ -467,6 +587,34 @@ AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "copy_to_session",
+            "description": "Copy a file from another session path into the current session folder before editing. This prevents modifying files in other sessions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_path": {
+                        "type": "string",
+                        "description": "Absolute path to source file (recommended), e.g. /Volumes/.../<session_id>/file.docx",
+                    },
+                    "source_session_id": {
+                        "type": "string",
+                        "description": "Alternative to source_path: source session ID.",
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Alternative to source_path: filename under source_session_id.",
+                    },
+                    "target_filename": {
+                        "type": "string",
+                        "description": "Optional filename (or relative path) for the copied file in the current session.",
+                    },
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_volume_files",
             "description": "List all files in the current session's output directory.",
             "parameters": {
@@ -499,14 +647,31 @@ def handle_tool_call(
 
     if tool_name == "load_skill":
         skill_name = tool_args.get("skill_name", "")
-        instructions = load_skill_instructions(config, skill_name)
-        if instructions:
-            return f"## {skill_name} Skill Instructions\n\n{instructions}"
-        return f"Skill '{skill_name}' not found. Available skills: {config.available_skills}"
+        for skill in get_skill_definitions(config):
+            if skill_name in {skill["id"], skill["name"]}:
+                return f"Loaded skill: {skill['id']}\n\n{skill['content']}"
+        available = ", ".join(skill["id"] for skill in get_skill_definitions(config))
+        return f"Skill '{skill_name}' not found. Available skills: {available}"
     
     elif tool_name == "execute_python":
         code = tool_args.get("code", "")
-        result = execute_python_code(code)
+        exec_context: dict[str, Any] = {}
+        if _last_read_from_volume.get("content_base64"):
+            try:
+                source_bytes = base64.b64decode(_last_read_from_volume["content_base64"])
+                exec_context.update(
+                    {
+                        "source_doc_bytes": source_bytes,
+                        "source_doc_base64": _last_read_from_volume["content_base64"],
+                        "source_doc_filename": _last_read_from_volume.get("filename", ""),
+                        "source_doc_path": _last_read_from_volume.get("path", ""),
+                    }
+                )
+            except Exception:
+                # Keep execute_python resilient even if cached payload is malformed.
+                pass
+
+        result = execute_python_code(code, context=exec_context if exec_context else None)
         if result["success"]:
             output = "Code executed successfully."
             
@@ -562,8 +727,34 @@ def handle_tool_call(
             return_base64=True
         )
         if result["success"]:
-            return f"File read successfully ({result['size_bytes']} bytes). Content available as base64."
+            _last_read_from_volume.clear()
+            _last_read_from_volume.update(
+                {
+                    "filename": tool_args.get("filename", ""),
+                    "path": result.get("path", ""),
+                    "content_base64": result.get("content", ""),
+                    "size_bytes": result.get("size_bytes", 0),
+                }
+            )
+            return (
+                "File read successfully "
+                f"({result['size_bytes']} bytes). "
+                "Content is now available to execute_python as "
+                "`source_doc_bytes`, `source_doc_base64`, `source_doc_filename`, and `source_doc_path`."
+            )
         return f"Failed to read file: {result['error']}"
+
+    elif tool_name == "copy_to_session":
+        result = copy_file_to_current_session(
+            config,
+            source_path=tool_args.get("source_path"),
+            source_session_id=tool_args.get("source_session_id"),
+            filename=tool_args.get("filename"),
+            target_filename=tool_args.get("target_filename"),
+        )
+        if result["success"]:
+            return f"✓ Copied to current session: {result['target_path']} (from {result['source_path']})"
+        return f"✗ Failed to copy to current session: {result['error']}"
     
     elif tool_name == "list_volume_files":
         result = list_uc_volume_files(config)

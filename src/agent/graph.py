@@ -51,12 +51,13 @@ class DocumentAgent:
 
 ## How to Use Skills
 
-1. When the user asks what skills are available, first call `list_skills` to enumerate skills from disk.
-2. When a user request matches a skill's capabilities, first use the `load_skill` tool to get detailed instructions.
-3. Follow the skill's instructions carefully - they contain specific Python code patterns.
-4. Use `execute_python` to run Python code for document operations (python-docx is available).
-5. Use `save_to_volume` to save generated files to Unity Catalog for the user to access.
-6. Use `list_volume_files` to show the user what files have been created.
+1. Review the available skill descriptions in the system prompt.
+2. When a request matches a skill, call `load_skill` to load the full instructions on demand.
+3. If a source file is in another session, first use `copy_to_session` to duplicate it into the current session folder.
+4. For editing an existing file, use `read_from_volume` first, then use `execute_python` with `source_doc_bytes` (provided automatically by the tool flow).
+5. Follow the skill instructions and use `execute_python` for document operations.
+6. Use `save_to_volume` to save generated files to Unity Catalog for the user to access.
+7. Use `list_volume_files` to show the user what files have been created.
 
 ## File Output
 
@@ -67,7 +68,9 @@ All generated files are saved to Unity Catalog Volume:
 ## Guidelines
 
 - Always load a skill's instructions before attempting to use it
+- Use progressive disclosure: keep only skill summaries in context until `load_skill` is needed
 - Follow the skill's documented Python patterns exactly
+- Never edit files directly in other sessions; copy them into the current session first
 - After creating a document, always save it with `save_to_volume`
 - Report the file path to the user after saving
 - If a skill isn't appropriate for the task, explain what you can and cannot do
