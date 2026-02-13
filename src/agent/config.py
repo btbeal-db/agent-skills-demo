@@ -53,6 +53,18 @@ class AgentConfig:
         except ValueError:
             return default
 
+    @staticmethod
+    def _normalize_uc_volume_path(value: str) -> str:
+        """Accept either /Volumes path or catalog.schema.volume and normalize."""
+        cleaned = value.strip()
+        if not cleaned:
+            return cleaned
+        if cleaned.startswith("/Volumes/"):
+            return cleaned
+        if "." in cleaned and "/" not in cleaned and len(cleaned.split(".")) == 3:
+            return "/Volumes/" + cleaned.replace(".", "/")
+        return cleaned
+
     @classmethod
     def from_env(cls) -> "AgentConfig":
         """Build config from environment variables.
@@ -65,9 +77,13 @@ class AgentConfig:
                 "AGENT_MODEL_ENDPOINT",
                 os.getenv("SERVING_ENDPOINT_NAME", "databricks-gpt-5-2"),
             ),
-            uc_volume_path=os.getenv(
-                "AGENT_UC_VOLUME_PATH",
-                os.getenv("UC_VOLUME_PATH", "/Volumes/hls_amer_catalog/appeals-review/created_docs"),
+            uc_volume_path=cls._normalize_uc_volume_path(
+                os.getenv(
+                    "AGENT_UC_VOLUME_PATH",
+                    os.getenv(
+                        "UC_VOLUME_PATH", "/Volumes/hls_amer_catalog/appeals-review/created_docs"
+                    ),
+                )
             ),
             local_output_dir=os.getenv("AGENT_LOCAL_OUTPUT_DIR", "./output"),
             output_mode=os.getenv("AGENT_OUTPUT_MODE", "auto").strip().lower(),

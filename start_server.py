@@ -7,17 +7,28 @@ import logging
 import os
 
 import mlflow
-from mlflow.genai.agent_server import AgentServer, setup_mlflow_git_based_version_tracking
+from mlflow.genai.agent_server import AgentServer
 
 logger = logging.getLogger(__name__)
 
-mlflow.set_experiment(os.getenv("MLFLOW_EXPERIMENT_ID"))
-
 agent_server = AgentServer("ResponsesAgent")
 app = agent_server.app
-
-# Optional helper to link traces to git revisions.
-setup_mlflow_git_based_version_tracking()
+mlflow.set_tracking_uri("databricks")
+exp_id = os.getenv("MLFLOW_EXPERIMENT_ID")
+if exp_id:
+    try:
+        logger.info("Setting MLflow experiment to %s", exp_id)
+        mlflow.set_experiment(experiment_id=exp_id)
+        logger.info("MLflow experiment set by ID from MLFLOW_EXPERIMENT_ID")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Unable to set MLflow experiment from MLFLOW_EXPERIMENT_ID='%s': %s",
+            exp_id,
+            exc,
+        )
+else:
+    mlflow.set_experiment(experiment_id=4065770263086216)
+    logger.warning("MLFLOW_EXPERIMENT_ID is not set; using default experiment")
 
 
 def main() -> None:
