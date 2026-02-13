@@ -118,7 +118,17 @@ All generated files are saved to Unity Catalog Volume:
 
                 logger.info("[tool_node] Running tool '%s'", tool_name)
 
-                result = handle_tool_call(self.config, tool_name, tool_args)
+                with mlflow.start_span(name=f"tool:{tool_name}") as span:
+                    span.set_attribute("tool.name", tool_name)
+                    span.set_attribute("tool.call_id", tool_id)
+                    span.set_inputs(
+                        {
+                            "tool_name": tool_name,
+                            "tool_args": tool_args,
+                        }
+                    )
+                    result = handle_tool_call(self.config, tool_name, tool_args)
+                    span.set_outputs({"result": result})
 
                 logger.info("[tool_node] Tool '%s' completed", tool_name)
 

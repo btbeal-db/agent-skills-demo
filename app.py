@@ -5,6 +5,8 @@ import sys
 import logging
 from collections.abc import Generator
 
+import mlflow
+
 # Add src to path so we can import the agent modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
@@ -21,6 +23,9 @@ from mlflow.types.responses import (
 from agent import AgentConfig, DocumentResponsesAgent
 
 logger = logging.getLogger(__name__)
+
+# Enable LangChain autologging so model/tool planning traces are captured in MLflow.
+mlflow.langchain.autolog(log_traces=True, run_tracer_inline=True)
 
 _config = AgentConfig.from_env()
 # Databricks App serving should always persist outputs to UC Volume.
