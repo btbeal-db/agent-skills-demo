@@ -160,7 +160,7 @@ This demo implements the [Claude Agent Skills](https://platform.claude.com/docs/
 1. **Skill Discovery**: Skills are filesystem-based resources in `.claude/skills/`
 2. **Metadata Loading**: YAML frontmatter in `SKILL.md` describes when to use the skill
 3. **Progressive Disclosure**: Full instructions are loaded only when the skill is triggered
-4. **Python Execution**: Code runs via `exec()` with python-docx available
+4. **Python Execution**: Code runs via `exec()` and each skill imports its own dependencies
 5. **UC Volume Output**: Generated files saved to Unity Catalog for user access
 
 ## Example Prompts

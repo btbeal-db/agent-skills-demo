@@ -432,7 +432,8 @@ def copy_file_to_current_session(
 def execute_python_code(code: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Execute Python code in a controlled environment.
     
-    This is used for skill-generated Python code (e.g., python-docx operations).
+    This is used for skill-generated Python code. Any required imports should
+    be included directly in the provided code.
     
     Args:
         code: Python code to execute
@@ -442,29 +443,10 @@ def execute_python_code(code: str, context: dict[str, Any] | None = None) -> dic
         dict with success status, output, and any returned values
     """
     try:
-        # Create execution context with common imports
+        # Keep globals generic so skills can define their own dependencies.
         exec_globals = {
             "__builtins__": __builtins__,
-            "BytesIO": BytesIO,
-            "Path": Path,
         }
-        
-        # Add python-docx imports
-        try:
-            from docx import Document
-            from docx.shared import Inches, Pt, Cm
-            from docx.enum.text import WD_ALIGN_PARAGRAPH
-            from docx.enum.style import WD_STYLE_TYPE
-            exec_globals.update({
-                "Document": Document,
-                "Inches": Inches,
-                "Pt": Pt,
-                "Cm": Cm,
-                "WD_ALIGN_PARAGRAPH": WD_ALIGN_PARAGRAPH,
-                "WD_STYLE_TYPE": WD_STYLE_TYPE,
-            })
-        except ImportError:
-            pass  # python-docx not installed
         
         # Add user context
         if context:
@@ -529,13 +511,13 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "execute_python",
-            "description": "Execute Python code for document operations. Use python-docx for Word documents. The code should set a 'result' variable with any output.",
+            "description": "Execute Python code for document operations. The code should include any required imports and set a 'result' variable with any output.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "code": {
                         "type": "string",
-                        "description": "Python code to execute. Has access to: Document, Inches, Pt, Cm, WD_ALIGN_PARAGRAPH, BytesIO, Path"
+                        "description": "Python code to execute. Import required libraries in the code. If read_from_volume was used, source_doc_bytes, source_doc_base64, source_doc_filename, and source_doc_path are available."
                     }
                 },
                 "required": ["code"]

@@ -16,9 +16,9 @@ This skill uses `python-docx` for all Word document operations. All generated do
 | Edit document | Load, modify, save |
 | Save to UC Volume | Use `save_to_volume` tool with base64 content |
 
-## Available Imports
+## Import Requirements
 
-When using `execute_python`, these are pre-imported:
+When using `execute_python`, no third-party modules are pre-imported. Include required imports in your code block, for example:
 
 ```python
 from docx import Document
@@ -36,6 +36,10 @@ from pathlib import Path
 ### Basic Document
 
 ```python
+from docx import Document
+import base64
+from io import BytesIO
+
 # Create a simple document
 doc = Document()
 
@@ -50,7 +54,6 @@ doc.add_heading('Section 1', level=1)
 doc.add_paragraph('Content for section 1.')
 
 # Save to BytesIO for base64 encoding
-import base64
 buffer = BytesIO()
 doc.save(buffer)
 buffer.seek(0)
