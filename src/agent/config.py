@@ -110,6 +110,11 @@ class AgentConfig:
         if self.output_mode not in {"auto", "uc_volume", "local"}:
             self.output_mode = "auto"
 
+        # Resolve relative skills path against project root so discovery is not CWD-dependent.
+        if not self.skills_directory.is_absolute():
+            project_root = Path(__file__).resolve().parents[2]
+            self.skills_directory = (project_root / self.skills_directory).resolve()
+
         # Generate session ID if not provided
         if self.session_id is None:
             self.session_id = str(uuid.uuid4())[:8]
