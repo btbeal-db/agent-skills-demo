@@ -12,18 +12,24 @@ from pathlib import Path
 from typing import Any
 
 from databricks.sdk import WorkspaceClient
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from databricks_langchain import ChatDatabricks
 
 from .config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
 
-# Store the last execute_python result for use by save_to_volume
-_last_execute_result: dict[str, str] = {}
-# Store the last read_from_volume payload for use by execute_python.
-_last_read_from_volume: dict[str, Any] = {}
+class ToolContext:
+    """Per-request context for tool execution state.
+
+    This holds mutable state that needs to persist across tool calls within
+    a single agent invocation, but must be isolated between concurrent requests.
+    """
+
+    def __init__(self):
+        # Store the last execute_python result for use by save_to_volume
+        self.last_execute_result: dict[str, str] = {}
+        # Store the last read_from_volume payload for use by execute_python
+        self.last_read_from_volume: dict[str, Any] = {}
 
 
 def _get_workspace_client(config: AgentConfig) -> WorkspaceClient:
@@ -35,38 +41,14 @@ def _get_workspace_client(config: AgentConfig) -> WorkspaceClient:
     return WorkspaceClient()
 
 
-def create_llm(config: AgentConfig) -> ChatDatabricks:
-    """Create a ChatDatabricks LLM instance."""
-    if config.is_running_in_databricks:
-        workspace_client = WorkspaceClient()
-        logger.info("Initializing ChatDatabricks with runtime identity")
-    elif config.databricks_profile:
-        workspace_client = WorkspaceClient(profile=config.databricks_profile)
-        logger.info(
-            "Initializing ChatDatabricks with Databricks CLI profile '%s'",
-            config.databricks_profile,
-        )
-    else:
-        workspace_client = WorkspaceClient()
-        logger.info("Initializing ChatDatabricks with default local Databricks auth")
-
-    return ChatDatabricks(
-        endpoint=config.model_endpoint,
-        workspace_client=workspace_client,
-        temperature=0.1,
-        # Note: responses_api=True enables Databricks' built-in code execution
-        # which conflicts with our custom tools. Keep it False for custom tools.
-    )
-
-
 def build_skill_context(config: AgentConfig) -> str:
-    """Build system context from complete skill definitions."""
-    skill_definitions = get_skill_definitions(config)
-    if not skill_definitions:
+    """Build system context from skill metadata (without loading full content)."""
+    skill_metadata_list = get_skill_metadata_list(config)
+    if not skill_metadata_list:
         return ""
 
     skills_info = [
-        f"- **{skill['name']}**: {skill['description']}" for skill in skill_definitions
+        f"- **{skill['name']}**: {skill['description']}" for skill in skill_metadata_list
     ]
     return f"""
 ## Available Skills
@@ -84,20 +66,20 @@ def load_skill_instructions(config: AgentConfig, skill_name: str) -> str:
     skill_path = config.get_skill_path(skill_name) / "SKILL.md"
     if not skill_path.exists():
         return ""
-    
+
     content = skill_path.read_text()
-    
+
     # Remove YAML frontmatter
     if content.startswith("---"):
         end_idx = content.find("---", 3)
         if end_idx != -1:
             content = content[end_idx + 3:].strip()
-    
+
     return content
 
 
-def get_skill_definitions(config: AgentConfig) -> list[dict[str, str]]:
-    """Build complete skill definitions from filesystem skills."""
+def get_skill_metadata_list(config: AgentConfig) -> list[dict[str, str]]:
+    """Get skill metadata without loading full content (efficient for listing)."""
     skills: list[dict[str, str]] = []
     for skill_id in config.available_skills:
         metadata = config.load_skill_metadata(skill_id)
@@ -106,7 +88,6 @@ def get_skill_definitions(config: AgentConfig) -> list[dict[str, str]]:
                 "id": skill_id,
                 "name": metadata.get("name", skill_id),
                 "description": metadata.get("description", "No description available"),
-                "content": load_skill_instructions(config, skill_id),
                 "path": str(config.get_skill_path(skill_id)),
             }
         )
@@ -114,18 +95,10 @@ def get_skill_definitions(config: AgentConfig) -> list[dict[str, str]]:
 
 
 def list_skills(config: AgentConfig) -> dict[str, Any]:
-    """Enumerate complete skill definitions."""
-    skills = get_skill_definitions(config)
+    """Enumerate available skills (metadata only, no content loading)."""
+    skills = get_skill_metadata_list(config)
     return {
-        "skills": [
-            {
-                "id": skill["id"],
-                "name": skill["name"],
-                "description": skill["description"],
-                "path": skill["path"],
-            }
-            for skill in skills
-        ],
+        "skills": skills,
         "count": len(skills),
         "skill_directories": [str(path) for path in config.skill_directories],
     }
@@ -141,19 +114,8 @@ def save_to_uc_volume(
     content: bytes | str,
     content_type: str = "application/octet-stream"
 ) -> dict[str, Any]:
-    """Save a file to the Unity Catalog Volume.
-    
-    Args:
-        config: Agent configuration with UC Volume path
-        filename: Name for the file (e.g., "report.docx")
-        content: File content as bytes or base64-encoded string
-        content_type: MIME type of the content
-        
-    Returns:
-        dict with success status and file path or error
-    """
+    """Save a file to the Unity Catalog Volume."""
     try:
-        # Handle bytes and base64-encoded content safely.
         if isinstance(content, str):
             try:
                 content = base64.b64decode(content, validate=True)
@@ -163,32 +125,28 @@ def save_to_uc_volume(
                     "error": f"Invalid content_base64 payload: {exc}",
                     "path": None,
                 }
-        
-        # Construct full path
+
         output_dir = config.session_output_path
         full_path = f"{output_dir}/{filename}"
 
         if full_path.startswith("/Volumes/"):
-            # In Databricks Apps, use Files API for UC volume I/O.
             workspace_client = _get_workspace_client(config)
             try:
                 workspace_client.files.create_directory(output_dir)
             except Exception:
-                # Directory may already exist.
                 pass
             workspace_client.files.upload(full_path, BytesIO(content), overwrite=True)
         else:
-            # Local development fallback.
             os.makedirs(output_dir, exist_ok=True)
             with open(full_path, "wb") as f:
                 f.write(content)
-        
+
         return {
             "success": True,
             "path": full_path,
             "message": f"File saved successfully to {full_path}"
         }
-        
+
     except Exception as e:
         return {
             "success": False,
@@ -202,16 +160,7 @@ def read_from_uc_volume(
     filename: str,
     return_base64: bool = False
 ) -> dict[str, Any]:
-    """Read a file from the Unity Catalog Volume.
-    
-    Args:
-        config: Agent configuration with UC Volume path
-        filename: Name of the file to read
-        return_base64: If True, return content as base64 string
-        
-    Returns:
-        dict with success status and content or error
-    """
+    """Read a file from the Unity Catalog Volume."""
     try:
         full_path = f"{config.session_output_path}/{filename}"
 
@@ -222,17 +171,17 @@ def read_from_uc_volume(
         else:
             with open(full_path, "rb") as f:
                 content = f.read()
-        
+
         if return_base64:
             content = base64.b64encode(content).decode("utf-8")
-        
+
         return {
             "success": True,
             "path": full_path,
             "content": content,
             "size_bytes": len(content) if isinstance(content, bytes) else len(base64.b64decode(content))
         }
-        
+
     except FileNotFoundError:
         return {
             "success": False,
@@ -248,11 +197,7 @@ def read_from_uc_volume(
 
 
 def list_uc_volume_files(config: AgentConfig) -> dict[str, Any]:
-    """List files in the session's UC Volume directory.
-    
-    Returns:
-        dict with success status and list of files or error
-    """
+    """List files in the session's UC Volume directory."""
     try:
         output_dir = config.session_output_path
 
@@ -293,13 +238,13 @@ def list_uc_volume_files(config: AgentConfig) -> dict[str, Any]:
                     "size_bytes": os.path.getsize(file_path),
                     "path": file_path
                 })
-        
+
         return {
             "success": True,
             "files": files,
             "path": output_dir
         }
-        
+
     except Exception as e:
         return {
             "success": False,
@@ -426,46 +371,27 @@ def copy_file_to_current_session(
 
 
 # =============================================================================
-# Python-based Document Operations (replaces shell/npm execution)
+# Python-based Document Operations
 # =============================================================================
 
 def execute_python_code(code: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Execute Python code in a controlled environment.
-    
-    This is used for skill-generated Python code. Any required imports should
-    be included directly in the provided code.
-    
-    Args:
-        code: Python code to execute
-        context: Optional dict of variables to inject into the execution context
-        
-    Returns:
-        dict with success status, output, and any returned values
-    """
+    """Execute Python code in a controlled environment."""
     try:
-        # Keep globals generic so skills can define their own dependencies.
-        exec_globals = {
-            "__builtins__": __builtins__,
-        }
-        
-        # Add user context
+        exec_globals = {"__builtins__": __builtins__}
         if context:
             exec_globals.update(context)
-        
+
         exec_locals: dict[str, Any] = {}
-        
-        # Execute the code
         exec(code, exec_globals, exec_locals)
-        
-        # Look for a result variable
+
         result = exec_locals.get("result", exec_locals.get("output", None))
-        
+
         return {
             "success": True,
             "result": result,
             "locals": {k: str(v)[:200] for k, v in exec_locals.items() if not k.startswith("_")}
         }
-        
+
     except Exception as e:
         return {
             "success": False,
@@ -483,18 +409,15 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "list_skills",
-            "description": "Scan the skills directories and return all available skills. Use this when asked what skills are available.",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
+            "description": "Scan the skills directories and return all available skills.",
+            "parameters": {"type": "object", "properties": {}}
         }
     },
     {
         "type": "function",
         "function": {
             "name": "load_skill",
-            "description": "Load the full instructions for a skill to understand how to use it. Always call this before using a skill.",
+            "description": "Load the full instructions for a skill. Always call this before using a skill.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -511,13 +434,13 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "execute_python",
-            "description": "Execute Python code for document operations. The code should include any required imports and set a 'result' variable with any output.",
+            "description": "Execute Python code for document operations. Set a 'result' variable with any output.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "code": {
                         "type": "string",
-                        "description": "Python code to execute. Import required libraries in the code. If read_from_volume was used, source_doc_bytes, source_doc_base64, source_doc_filename, and source_doc_path are available."
+                        "description": "Python code to execute. If read_from_volume was used, source_doc_bytes/source_doc_base64/source_doc_filename/source_doc_path are available."
                     }
                 },
                 "required": ["code"]
@@ -528,22 +451,13 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "save_to_volume",
-            "description": "Save a file to the Unity Catalog Volume. If content_base64 is omitted, automatically uses the result from the last execute_python call.",
+            "description": "Save a file to the Unity Catalog Volume. If content_base64 is omitted, uses result from last execute_python.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "filename": {
-                        "type": "string",
-                        "description": "Name for the file (e.g., 'report.docx', 'chart.png')"
-                    },
-                    "content_base64": {
-                        "type": "string",
-                        "description": "File content as base64 string. Optional - if omitted, uses the 'result' from the last execute_python call."
-                    },
-                    "content_type": {
-                        "type": "string",
-                        "description": "MIME type (optional)"
-                    }
+                    "filename": {"type": "string", "description": "Name for the file"},
+                    "content_base64": {"type": "string", "description": "File content as base64 (optional)"},
+                    "content_type": {"type": "string", "description": "MIME type (optional)"}
                 },
                 "required": ["filename"]
             }
@@ -557,10 +471,7 @@ AGENT_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "filename": {
-                        "type": "string",
-                        "description": "Name of the file to read"
-                    }
+                    "filename": {"type": "string", "description": "Name of the file to read"}
                 },
                 "required": ["filename"]
             }
@@ -570,26 +481,14 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "copy_to_session",
-            "description": "Copy a file from another session path into the current session folder before editing. This prevents modifying files in other sessions.",
+            "description": "Copy a file from another session into the current session folder.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "source_path": {
-                        "type": "string",
-                        "description": "Absolute path to source file (recommended), e.g. /Volumes/.../<session_id>/file.docx",
-                    },
-                    "source_session_id": {
-                        "type": "string",
-                        "description": "Alternative to source_path: source session ID.",
-                    },
-                    "filename": {
-                        "type": "string",
-                        "description": "Alternative to source_path: filename under source_session_id.",
-                    },
-                    "target_filename": {
-                        "type": "string",
-                        "description": "Optional filename (or relative path) for the copied file in the current session.",
-                    },
+                    "source_path": {"type": "string", "description": "Absolute path to source file"},
+                    "source_session_id": {"type": "string", "description": "Source session ID"},
+                    "filename": {"type": "string", "description": "Filename under source_session_id"},
+                    "target_filename": {"type": "string", "description": "Target filename (optional)"},
                 }
             }
         }
@@ -599,10 +498,7 @@ AGENT_TOOLS = [
         "function": {
             "name": "list_volume_files",
             "description": "List all files in the current session's output directory.",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
+            "parameters": {"type": "object", "properties": {}}
         }
     }
 ]
@@ -611,87 +507,75 @@ AGENT_TOOLS = [
 def handle_tool_call(
     config: AgentConfig,
     tool_name: str,
-    tool_args: dict[str, Any]
+    tool_args: dict[str, Any],
+    tool_context: ToolContext | None = None,
 ) -> str:
     """Handle a tool call from the LLM."""
-    
+    if tool_context is None:
+        tool_context = ToolContext()
+
     if tool_name == "list_skills":
         result = list_skills(config)
         if not result["skills"]:
-            dirs = ", ".join(result["skill_directories"])
-            return f"No skills found in configured directories: {dirs}"
-        lines = []
-        for skill in result["skills"]:
-            lines.append(
-                f"- {skill['name']} ({skill['id']}): {skill['description']} [path: {skill['path']}]"
-            )
-        return "Available skills discovered from disk:\n" + "\n".join(lines)
+            return f"No skills found in: {', '.join(result['skill_directories'])}"
+        lines = [f"- {s['name']} ({s['id']}): {s['description']}" for s in result["skills"]]
+        return "Available skills:\n" + "\n".join(lines)
 
-    if tool_name == "load_skill":
+    elif tool_name == "load_skill":
         skill_name = tool_args.get("skill_name", "")
-        for skill in get_skill_definitions(config):
-            if skill_name in {skill["id"], skill["name"]}:
-                return f"Loaded skill: {skill['id']}\n\n{skill['content']}"
-        available = ", ".join(skill["id"] for skill in get_skill_definitions(config))
-        return f"Skill '{skill_name}' not found. Available skills: {available}"
-    
+        skill_lookup: dict[str, str] = {}
+        for skill_id in config.available_skills:
+            metadata = config.load_skill_metadata(skill_id)
+            skill_lookup[skill_id] = skill_id
+            skill_lookup[metadata.get("name", skill_id)] = skill_id
+
+        if skill_name in skill_lookup:
+            resolved_id = skill_lookup[skill_name]
+            content = load_skill_instructions(config, resolved_id)
+            return f"Loaded skill: {resolved_id}\n\n{content}"
+
+        return f"Skill '{skill_name}' not found. Available: {', '.join(config.available_skills)}"
+
     elif tool_name == "execute_python":
         code = tool_args.get("code", "")
         exec_context: dict[str, Any] = {}
-        if _last_read_from_volume.get("content_base64"):
+        if tool_context.last_read_from_volume.get("content_base64"):
             try:
-                source_bytes = base64.b64decode(_last_read_from_volume["content_base64"])
-                exec_context.update(
-                    {
-                        "source_doc_bytes": source_bytes,
-                        "source_doc_base64": _last_read_from_volume["content_base64"],
-                        "source_doc_filename": _last_read_from_volume.get("filename", ""),
-                        "source_doc_path": _last_read_from_volume.get("path", ""),
-                    }
-                )
+                source_bytes = base64.b64decode(tool_context.last_read_from_volume["content_base64"])
+                exec_context.update({
+                    "source_doc_bytes": source_bytes,
+                    "source_doc_base64": tool_context.last_read_from_volume["content_base64"],
+                    "source_doc_filename": tool_context.last_read_from_volume.get("filename", ""),
+                    "source_doc_path": tool_context.last_read_from_volume.get("path", ""),
+                })
             except Exception:
-                # Keep execute_python resilient even if cached payload is malformed.
                 pass
 
         result = execute_python_code(code, context=exec_context if exec_context else None)
         if result["success"]:
             output = "Code executed successfully."
-            
-            # Handle the result - if it's base64 content, don't return the full thing
             if result["result"] is not None:
                 result_value = result["result"]
                 if isinstance(result_value, bytes):
-                    # Preserve binary payloads (e.g., .docx) by storing base64 for save_to_volume.
                     encoded = base64.b64encode(result_value).decode("utf-8")
-                    _last_execute_result["content"] = encoded
-                    output += f"\nResult: <{len(result_value)} bytes of binary data>"
-                    output += "\n\nBinary result stored as base64. Use save_to_volume to save it."
+                    tool_context.last_execute_result["content"] = encoded
+                    output += f"\nResult: <{len(result_value)} bytes>. Use save_to_volume to save."
                 else:
                     result_str = str(result_value)
                     if len(result_str) > 500:
-                        output += f"\nResult: <{len(result_str)} characters of data>"
-                        output += "\n\nThe 'result' variable contains large data. Use save_to_volume to save it."
-                        _last_execute_result["content"] = result_str
+                        tool_context.last_execute_result["content"] = result_str
+                        output += f"\nResult: <{len(result_str)} chars>. Use save_to_volume to save."
                     else:
                         output += f"\nResult: {result_str}"
-            
-            if result["locals"]:
-                # Filter out large values from locals display
-                filtered_locals = {
-                    k: (v[:100] + "...") if len(str(v)) > 100 else v 
-                    for k, v in result["locals"].items()
-                }
-                output += f"\nVariables: {filtered_locals}"
             return output
         return f"Code execution failed: {result['error']}"
-    
+
     elif tool_name == "save_to_volume":
-        # Get content - use provided content_base64, or fall back to last execute_python result
         content = tool_args.get("content_base64", "")
-        if not content and _last_execute_result.get("content"):
-            content = _last_execute_result["content"]
-            _last_execute_result.clear()  # Clear after use
-        
+        if not content and tool_context.last_execute_result.get("content"):
+            content = tool_context.last_execute_result["content"]
+            tool_context.last_execute_result.clear()
+
         result = save_to_uc_volume(
             config,
             tool_args.get("filename", "output.bin"),
@@ -699,32 +583,21 @@ def handle_tool_call(
             tool_args.get("content_type", "application/octet-stream")
         )
         if result["success"]:
-            return f"✓ File saved: {result['path']}"
-        return f"✗ Failed to save file: {result['error']}"
-    
+            return f"File saved: {result['path']}"
+        return f"Failed to save: {result['error']}"
+
     elif tool_name == "read_from_volume":
-        result = read_from_uc_volume(
-            config,
-            tool_args.get("filename", ""),
-            return_base64=True
-        )
+        result = read_from_uc_volume(config, tool_args.get("filename", ""), return_base64=True)
         if result["success"]:
-            _last_read_from_volume.clear()
-            _last_read_from_volume.update(
-                {
-                    "filename": tool_args.get("filename", ""),
-                    "path": result.get("path", ""),
-                    "content_base64": result.get("content", ""),
-                    "size_bytes": result.get("size_bytes", 0),
-                }
-            )
-            return (
-                "File read successfully "
-                f"({result['size_bytes']} bytes). "
-                "Content is now available to execute_python as "
-                "`source_doc_bytes`, `source_doc_base64`, `source_doc_filename`, and `source_doc_path`."
-            )
-        return f"Failed to read file: {result['error']}"
+            tool_context.last_read_from_volume.clear()
+            tool_context.last_read_from_volume.update({
+                "filename": tool_args.get("filename", ""),
+                "path": result.get("path", ""),
+                "content_base64": result.get("content", ""),
+                "size_bytes": result.get("size_bytes", 0),
+            })
+            return f"File read ({result['size_bytes']} bytes). Available as source_doc_bytes/source_doc_base64."
+        return f"Failed to read: {result['error']}"
 
     elif tool_name == "copy_to_session":
         result = copy_file_to_current_session(
@@ -735,9 +608,9 @@ def handle_tool_call(
             target_filename=tool_args.get("target_filename"),
         )
         if result["success"]:
-            return f"✓ Copied to current session: {result['target_path']} (from {result['source_path']})"
-        return f"✗ Failed to copy to current session: {result['error']}"
-    
+            return f"Copied: {result['target_path']}"
+        return f"Failed to copy: {result['error']}"
+
     elif tool_name == "list_volume_files":
         result = list_uc_volume_files(config)
         if result["success"]:
@@ -745,6 +618,6 @@ def handle_tool_call(
                 return f"No files in {result['path']}"
             file_list = "\n".join([f"- {f['name']} ({f['size_bytes']} bytes)" for f in result["files"]])
             return f"Files in {result['path']}:\n{file_list}"
-        return f"Failed to list files: {result['error']}"
-    
+        return f"Failed to list: {result['error']}"
+
     return f"Unknown tool: {tool_name}"

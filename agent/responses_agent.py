@@ -74,14 +74,12 @@ class DocumentResponsesAgent(ResponsesAgent):
     def _build_response(text: str) -> ResponsesAgentResponse:
         """Build a standard ResponsesAgentResponse payload."""
         return ResponsesAgentResponse(
-            output=[
-                {
-                    "id": str(uuid.uuid4()),
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": text}],
-                }
-            ]
+            output=[{
+                "id": str(uuid.uuid4()),
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text}],
+            }]
         )
 
     def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
@@ -106,7 +104,7 @@ class DocumentResponsesAgent(ResponsesAgent):
     def predict_stream(
         self, request: ResponsesAgentRequest
     ) -> Generator[ResponsesAgentStreamEvent, None, None]:
-        """Handle streaming invocation by chunking final text output."""
+        """Handle streaming invocation using LangGraph's real streaming."""
         if not request.input:
             yield ResponsesAgentStreamEvent(
                 type="response.output_item.done",
@@ -121,17 +119,30 @@ class DocumentResponsesAgent(ResponsesAgent):
 
         try:
             lc_messages = self._to_langchain_messages(request.input)
-            result = self.document_agent.invoke(lc_messages, iteration_count=0)
-            response_content = self._extract_final_response_content(result)
+            item_id = "msg_" + str(self.config.session_id)
+            final_content = ""
+            streamed_content_length = 0
 
-            item_id = "msg_" + self.config.session_id
-            for i in range(0, len(response_content), self.chunk_size):
-                chunk_text = response_content[i : i + self.chunk_size]
-                yield ResponsesAgentStreamEvent(
-                    type="response.output_text.delta",
-                    item_id=item_id,
-                    delta=chunk_text,
-                )
+            for update in self.document_agent.stream(lc_messages, iteration_count=0):
+                if "agent" in update:
+                    agent_update = update["agent"]
+                    messages = agent_update.get("messages", [])
+
+                    for message in messages:
+                        if isinstance(message, AIMessage) and message.content:
+                            content = str(message.content)
+                            final_content = content
+
+                            new_content = content[streamed_content_length:]
+                            if new_content:
+                                for i in range(0, len(new_content), self.chunk_size):
+                                    chunk = new_content[i : i + self.chunk_size]
+                                    yield ResponsesAgentStreamEvent(
+                                        type="response.output_text.delta",
+                                        item_id=item_id,
+                                        delta=chunk,
+                                    )
+                                streamed_content_length = len(content)
 
             yield ResponsesAgentStreamEvent(
                 type="response.output_item.done",
@@ -139,7 +150,7 @@ class DocumentResponsesAgent(ResponsesAgent):
                     "id": item_id,
                     "type": "message",
                     "role": "assistant",
-                    "content": [{"type": "output_text", "text": response_content}],
+                    "content": [{"type": "output_text", "text": final_content}],
                 },
             )
         except Exception as e:
@@ -152,4 +163,3 @@ class DocumentResponsesAgent(ResponsesAgent):
                     "content": [{"type": "output_text", "text": f"Error: {str(e)}"}],
                 },
             )
-

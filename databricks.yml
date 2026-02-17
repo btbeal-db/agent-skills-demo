@@ -13,10 +13,11 @@ variables:
 sync:
   include:
     - app.py
+    - app.yaml
     - start_server.py
     - pyproject.toml
     - uv.lock
-    - src/**
+    - agent/**
     - .claude/skills/**
 
 resources:
@@ -50,21 +51,6 @@ resources:
             securable_type: VOLUME
             securable_full_name: hls_amer_catalog.appeals-review.created_docs_${bundle.target}
             permission: READ_VOLUME
-      config:
-        command: ["python", "start_server.py"]
-        env:
-          - name: MLFLOW_EXPERIMENT_ID
-            value_from: experiment
-          - name: AGENT_MODEL_ENDPOINT
-            value_from: serving-endpoint
-          - name: AGENT_UC_VOLUME_PATH
-            value_from: uc-volume-write
-          - name: AGENT_OUTPUT_MODE
-            value: "uc_volume"
-          - name: AGENT_SKILLS_DIR
-            value: "./.claude/skills"
-          - name: AGENT_MAX_ITERATIONS
-            value: "10"
 
 targets:
   dev:
