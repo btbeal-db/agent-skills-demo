@@ -74,14 +74,12 @@ class DocumentResponsesAgent(ResponsesAgent):
     def _build_response(text: str) -> ResponsesAgentResponse:
         """Build a standard ResponsesAgentResponse payload."""
         return ResponsesAgentResponse(
-            output=[
-                {
-                    "id": str(uuid.uuid4()),
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": text}],
-                }
-            ]
+            output=[{
+                "id": str(uuid.uuid4()),
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text}],
+            }]
         )
 
     def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
@@ -106,11 +104,7 @@ class DocumentResponsesAgent(ResponsesAgent):
     def predict_stream(
         self, request: ResponsesAgentRequest
     ) -> Generator[ResponsesAgentStreamEvent, None, None]:
-        """Handle streaming invocation using LangGraph's real streaming.
-
-        Streams events as the agent progresses through its workflow, yielding
-        AI message content as soon as each agent node completes.
-        """
+        """Handle streaming invocation using LangGraph's real streaming."""
         if not request.input:
             yield ResponsesAgentStreamEvent(
                 type="response.output_item.done",
@@ -129,9 +123,7 @@ class DocumentResponsesAgent(ResponsesAgent):
             final_content = ""
             streamed_content_length = 0
 
-            # Stream through LangGraph updates as each node completes
             for update in self.document_agent.stream(lc_messages, iteration_count=0):
-                # update is {node_name: state_update} - extract the agent node updates
                 if "agent" in update:
                     agent_update = update["agent"]
                     messages = agent_update.get("messages", [])
@@ -141,10 +133,8 @@ class DocumentResponsesAgent(ResponsesAgent):
                             content = str(message.content)
                             final_content = content
 
-                            # Stream new content that hasn't been sent yet
                             new_content = content[streamed_content_length:]
                             if new_content:
-                                # Stream in chunks for smoother output
                                 for i in range(0, len(new_content), self.chunk_size):
                                     chunk = new_content[i : i + self.chunk_size]
                                     yield ResponsesAgentStreamEvent(
@@ -154,7 +144,6 @@ class DocumentResponsesAgent(ResponsesAgent):
                                     )
                                 streamed_content_length = len(content)
 
-            # Send the final done event with complete content
             yield ResponsesAgentStreamEvent(
                 type="response.output_item.done",
                 item={
@@ -174,4 +163,3 @@ class DocumentResponsesAgent(ResponsesAgent):
                     "content": [{"type": "output_text", "text": f"Error: {str(e)}"}],
                 },
             )
-

@@ -6,4 +6,3 @@ from .responses_agent import DocumentResponsesAgent
 from .tools import ToolContext
 
 __all__ = ["AgentConfig", "DocumentAgent", "DocumentResponsesAgent", "ToolContext"]
-

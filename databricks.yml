@@ -16,7 +16,7 @@ sync:
     - start_server.py
     - pyproject.toml
     - uv.lock
-    - src/**
+    - agent/**
     - .claude/skills/**
 
 resources:

@@ -24,12 +24,6 @@ dependencies = [
 [project.scripts]
 agent-demo = "main:main"
 
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-dir]
-"" = "src"
-
 [tool.uv]
 dev-dependencies = [
     "pytest>=8.0.0",

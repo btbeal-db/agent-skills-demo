@@ -108,7 +108,7 @@ class AgentConfig:
 
         # Resolve relative skills path against project root so discovery is not CWD-dependent.
         if not self.skills_directory.is_absolute():
-            project_root = Path(__file__).resolve().parents[2]
+            project_root = Path(__file__).resolve().parents[1]
             self.skills_directory = (project_root / self.skills_directory).resolve()
 
         # Generate session ID if not provided
@@ -190,4 +190,3 @@ class AgentConfig:
                 except yaml.YAMLError:
                     return {}
         return {}
-
