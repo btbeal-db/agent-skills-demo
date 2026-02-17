@@ -12,18 +12,24 @@ from pathlib import Path
 from typing import Any
 
 from databricks.sdk import WorkspaceClient
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from databricks_langchain import ChatDatabricks
 
 from .config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
 
-# Store the last execute_python result for use by save_to_volume
-_last_execute_result: dict[str, str] = {}
-# Store the last read_from_volume payload for use by execute_python.
-_last_read_from_volume: dict[str, Any] = {}
+class ToolContext:
+    """Per-request context for tool execution state.
+
+    This holds mutable state that needs to persist across tool calls within
+    a single agent invocation, but must be isolated between concurrent requests.
+    """
+
+    def __init__(self):
+        # Store the last execute_python result for use by save_to_volume
+        self.last_execute_result: dict[str, str] = {}
+        # Store the last read_from_volume payload for use by execute_python
+        self.last_read_from_volume: dict[str, Any] = {}
 
 
 def _get_workspace_client(config: AgentConfig) -> WorkspaceClient:
@@ -35,38 +41,14 @@ def _get_workspace_client(config: AgentConfig) -> WorkspaceClient:
     return WorkspaceClient()
 
 
-def create_llm(config: AgentConfig) -> ChatDatabricks:
-    """Create a ChatDatabricks LLM instance."""
-    if config.is_running_in_databricks:
-        workspace_client = WorkspaceClient()
-        logger.info("Initializing ChatDatabricks with runtime identity")
-    elif config.databricks_profile:
-        workspace_client = WorkspaceClient(profile=config.databricks_profile)
-        logger.info(
-            "Initializing ChatDatabricks with Databricks CLI profile '%s'",
-            config.databricks_profile,
-        )
-    else:
-        workspace_client = WorkspaceClient()
-        logger.info("Initializing ChatDatabricks with default local Databricks auth")
-
-    return ChatDatabricks(
-        endpoint=config.model_endpoint,
-        workspace_client=workspace_client,
-        temperature=0.1,
-        # Note: responses_api=True enables Databricks' built-in code execution
-        # which conflicts with our custom tools. Keep it False for custom tools.
-    )
-
-
 def build_skill_context(config: AgentConfig) -> str:
-    """Build system context from complete skill definitions."""
-    skill_definitions = get_skill_definitions(config)
-    if not skill_definitions:
+    """Build system context from skill metadata (without loading full content)."""
+    skill_metadata_list = get_skill_metadata_list(config)
+    if not skill_metadata_list:
         return ""
 
     skills_info = [
-        f"- **{skill['name']}**: {skill['description']}" for skill in skill_definitions
+        f"- **{skill['name']}**: {skill['description']}" for skill in skill_metadata_list
     ]
     return f"""
 ## Available Skills
@@ -84,20 +66,20 @@ def load_skill_instructions(config: AgentConfig, skill_name: str) -> str:
     skill_path = config.get_skill_path(skill_name) / "SKILL.md"
     if not skill_path.exists():
         return ""
-    
+
     content = skill_path.read_text()
-    
+
     # Remove YAML frontmatter
     if content.startswith("---"):
         end_idx = content.find("---", 3)
         if end_idx != -1:
             content = content[end_idx + 3:].strip()
-    
+
     return content
 
 
-def get_skill_definitions(config: AgentConfig) -> list[dict[str, str]]:
-    """Build complete skill definitions from filesystem skills."""
+def get_skill_metadata_list(config: AgentConfig) -> list[dict[str, str]]:
+    """Get skill metadata without loading full content (efficient for listing)."""
     skills: list[dict[str, str]] = []
     for skill_id in config.available_skills:
         metadata = config.load_skill_metadata(skill_id)
@@ -106,7 +88,6 @@ def get_skill_definitions(config: AgentConfig) -> list[dict[str, str]]:
                 "id": skill_id,
                 "name": metadata.get("name", skill_id),
                 "description": metadata.get("description", "No description available"),
-                "content": load_skill_instructions(config, skill_id),
                 "path": str(config.get_skill_path(skill_id)),
             }
         )
@@ -114,18 +95,10 @@ def get_skill_definitions(config: AgentConfig) -> list[dict[str, str]]:
 
 
 def list_skills(config: AgentConfig) -> dict[str, Any]:
-    """Enumerate complete skill definitions."""
-    skills = get_skill_definitions(config)
+    """Enumerate available skills (metadata only, no content loading)."""
+    skills = get_skill_metadata_list(config)
     return {
-        "skills": [
-            {
-                "id": skill["id"],
-                "name": skill["name"],
-                "description": skill["description"],
-                "path": skill["path"],
-            }
-            for skill in skills
-        ],
+        "skills": skills,
         "count": len(skills),
         "skill_directories": [str(path) for path in config.skill_directories],
     }
@@ -611,10 +584,22 @@ AGENT_TOOLS = [
 def handle_tool_call(
     config: AgentConfig,
     tool_name: str,
-    tool_args: dict[str, Any]
+    tool_args: dict[str, Any],
+    tool_context: ToolContext | None = None,
 ) -> str:
-    """Handle a tool call from the LLM."""
-    
+    """Handle a tool call from the LLM.
+
+    Args:
+        config: Agent configuration
+        tool_name: Name of the tool to execute
+        tool_args: Arguments for the tool
+        tool_context: Per-request context for state that persists across tool calls.
+                      If None, a temporary context is created (not recommended for
+                      production use with concurrent requests).
+    """
+    if tool_context is None:
+        tool_context = ToolContext()
+
     if tool_name == "list_skills":
         result = list_skills(config)
         if not result["skills"]:
@@ -627,26 +612,34 @@ def handle_tool_call(
             )
         return "Available skills discovered from disk:\n" + "\n".join(lines)
 
-    if tool_name == "load_skill":
+    elif tool_name == "load_skill":
         skill_name = tool_args.get("skill_name", "")
-        for skill in get_skill_definitions(config):
-            if skill_name in {skill["id"], skill["name"]}:
-                return f"Loaded skill: {skill['id']}\n\n{skill['content']}"
-        available = ", ".join(skill["id"] for skill in get_skill_definitions(config))
-        return f"Skill '{skill_name}' not found. Available skills: {available}"
+        # Build a lookup dict for O(1) skill resolution by id or name
+        skill_lookup: dict[str, str] = {}
+        for skill_id in config.available_skills:
+            metadata = config.load_skill_metadata(skill_id)
+            skill_lookup[skill_id] = skill_id
+            skill_lookup[metadata.get("name", skill_id)] = skill_id
+
+        if skill_name in skill_lookup:
+            resolved_id = skill_lookup[skill_name]
+            content = load_skill_instructions(config, resolved_id)
+            return f"Loaded skill: {resolved_id}\n\n{content}"
+
+        return f"Skill '{skill_name}' not found. Available skills: {', '.join(config.available_skills)}"
     
     elif tool_name == "execute_python":
         code = tool_args.get("code", "")
         exec_context: dict[str, Any] = {}
-        if _last_read_from_volume.get("content_base64"):
+        if tool_context.last_read_from_volume.get("content_base64"):
             try:
-                source_bytes = base64.b64decode(_last_read_from_volume["content_base64"])
+                source_bytes = base64.b64decode(tool_context.last_read_from_volume["content_base64"])
                 exec_context.update(
                     {
                         "source_doc_bytes": source_bytes,
-                        "source_doc_base64": _last_read_from_volume["content_base64"],
-                        "source_doc_filename": _last_read_from_volume.get("filename", ""),
-                        "source_doc_path": _last_read_from_volume.get("path", ""),
+                        "source_doc_base64": tool_context.last_read_from_volume["content_base64"],
+                        "source_doc_filename": tool_context.last_read_from_volume.get("filename", ""),
+                        "source_doc_path": tool_context.last_read_from_volume.get("path", ""),
                     }
                 )
             except Exception:
@@ -656,14 +649,14 @@ def handle_tool_call(
         result = execute_python_code(code, context=exec_context if exec_context else None)
         if result["success"]:
             output = "Code executed successfully."
-            
+
             # Handle the result - if it's base64 content, don't return the full thing
             if result["result"] is not None:
                 result_value = result["result"]
                 if isinstance(result_value, bytes):
                     # Preserve binary payloads (e.g., .docx) by storing base64 for save_to_volume.
                     encoded = base64.b64encode(result_value).decode("utf-8")
-                    _last_execute_result["content"] = encoded
+                    tool_context.last_execute_result["content"] = encoded
                     output += f"\nResult: <{len(result_value)} bytes of binary data>"
                     output += "\n\nBinary result stored as base64. Use save_to_volume to save it."
                 else:
@@ -671,14 +664,14 @@ def handle_tool_call(
                     if len(result_str) > 500:
                         output += f"\nResult: <{len(result_str)} characters of data>"
                         output += "\n\nThe 'result' variable contains large data. Use save_to_volume to save it."
-                        _last_execute_result["content"] = result_str
+                        tool_context.last_execute_result["content"] = result_str
                     else:
                         output += f"\nResult: {result_str}"
-            
+
             if result["locals"]:
                 # Filter out large values from locals display
                 filtered_locals = {
-                    k: (v[:100] + "...") if len(str(v)) > 100 else v 
+                    k: (v[:100] + "...") if len(str(v)) > 100 else v
                     for k, v in result["locals"].items()
                 }
                 output += f"\nVariables: {filtered_locals}"
@@ -688,10 +681,10 @@ def handle_tool_call(
     elif tool_name == "save_to_volume":
         # Get content - use provided content_base64, or fall back to last execute_python result
         content = tool_args.get("content_base64", "")
-        if not content and _last_execute_result.get("content"):
-            content = _last_execute_result["content"]
-            _last_execute_result.clear()  # Clear after use
-        
+        if not content and tool_context.last_execute_result.get("content"):
+            content = tool_context.last_execute_result["content"]
+            tool_context.last_execute_result.clear()  # Clear after use
+
         result = save_to_uc_volume(
             config,
             tool_args.get("filename", "output.bin"),
@@ -701,7 +694,7 @@ def handle_tool_call(
         if result["success"]:
             return f"✓ File saved: {result['path']}"
         return f"✗ Failed to save file: {result['error']}"
-    
+
     elif tool_name == "read_from_volume":
         result = read_from_uc_volume(
             config,
@@ -709,8 +702,8 @@ def handle_tool_call(
             return_base64=True
         )
         if result["success"]:
-            _last_read_from_volume.clear()
-            _last_read_from_volume.update(
+            tool_context.last_read_from_volume.clear()
+            tool_context.last_read_from_volume.update(
                 {
                     "filename": tool_args.get("filename", ""),
                     "path": result.get("path", ""),

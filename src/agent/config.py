@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+import yaml
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -98,12 +99,7 @@ class AgentConfig:
         )
 
     def __post_init__(self):
-        """Set up Databricks SDK profile via environment variable."""
-        # Only set profile if provided and not running in Databricks
-        # (Databricks runtime uses default authentication)
-        if self.databricks_profile and not self.is_running_in_databricks:
-            os.environ["DATABRICKS_CONFIG_PROFILE"] = self.databricks_profile
-
+        """Validate and normalize configuration values."""
         if self.max_iterations < 1:
             self.max_iterations = 1
 
@@ -183,16 +179,15 @@ class AgentConfig:
 
         content = skill_path.read_text()
 
-        # Parse YAML frontmatter
+        # Parse YAML frontmatter using pyyaml for robust parsing
         if content.startswith("---"):
             end_idx = content.find("---", 3)
             if end_idx != -1:
                 frontmatter = content[3:end_idx].strip()
-                metadata = {}
-                for line in frontmatter.split("\n"):
-                    if ":" in line:
-                        key, value = line.split(":", 1)
-                        metadata[key.strip()] = value.strip().strip('"')
-                return metadata
+                try:
+                    metadata = yaml.safe_load(frontmatter)
+                    return metadata if isinstance(metadata, dict) else {}
+                except yaml.YAMLError:
+                    return {}
         return {}
 

@@ -22,6 +22,7 @@ dependencies = [
     { name = "mlflow", extra = ["genai"] },
     { name = "python-docx" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
     { name = "uvicorn" },
 ]
 
@@ -43,6 +44,7 @@ requires-dist = [
     { name = "mlflow", extras = ["genai"], specifier = ">=3.6.0" },
     { name = "python-docx", specifier = ">=1.1.0" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "uvicorn", specifier = ">=0.30.0" },
 ]
 

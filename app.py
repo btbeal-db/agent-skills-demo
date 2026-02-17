@@ -1,15 +1,9 @@
 """Agent handlers for MLflow Agent Server."""
 
-import os
-import sys
 import logging
 from collections.abc import Generator
 
 import mlflow
-
-# Add src to path so we can import the agent modules
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
-
 from mlflow.genai.agent_server import (
     invoke,
     stream,

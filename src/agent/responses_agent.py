@@ -106,7 +106,11 @@ class DocumentResponsesAgent(ResponsesAgent):
     def predict_stream(
         self, request: ResponsesAgentRequest
     ) -> Generator[ResponsesAgentStreamEvent, None, None]:
-        """Handle streaming invocation by chunking final text output."""
+        """Handle streaming invocation using LangGraph's real streaming.
+
+        Streams events as the agent progresses through its workflow, yielding
+        AI message content as soon as each agent node completes.
+        """
         if not request.input:
             yield ResponsesAgentStreamEvent(
                 type="response.output_item.done",
@@ -121,25 +125,43 @@ class DocumentResponsesAgent(ResponsesAgent):
 
         try:
             lc_messages = self._to_langchain_messages(request.input)
-            result = self.document_agent.invoke(lc_messages, iteration_count=0)
-            response_content = self._extract_final_response_content(result)
+            item_id = "msg_" + str(self.config.session_id)
+            final_content = ""
+            streamed_content_length = 0
 
-            item_id = "msg_" + self.config.session_id
-            for i in range(0, len(response_content), self.chunk_size):
-                chunk_text = response_content[i : i + self.chunk_size]
-                yield ResponsesAgentStreamEvent(
-                    type="response.output_text.delta",
-                    item_id=item_id,
-                    delta=chunk_text,
-                )
+            # Stream through LangGraph updates as each node completes
+            for update in self.document_agent.stream(lc_messages, iteration_count=0):
+                # update is {node_name: state_update} - extract the agent node updates
+                if "agent" in update:
+                    agent_update = update["agent"]
+                    messages = agent_update.get("messages", [])
 
+                    for message in messages:
+                        if isinstance(message, AIMessage) and message.content:
+                            content = str(message.content)
+                            final_content = content
+
+                            # Stream new content that hasn't been sent yet
+                            new_content = content[streamed_content_length:]
+                            if new_content:
+                                # Stream in chunks for smoother output
+                                for i in range(0, len(new_content), self.chunk_size):
+                                    chunk = new_content[i : i + self.chunk_size]
+                                    yield ResponsesAgentStreamEvent(
+                                        type="response.output_text.delta",
+                                        item_id=item_id,
+                                        delta=chunk,
+                                    )
+                                streamed_content_length = len(content)
+
+            # Send the final done event with complete content
             yield ResponsesAgentStreamEvent(
                 type="response.output_item.done",
                 item={
                     "id": item_id,
                     "type": "message",
                     "role": "assistant",
-                    "content": [{"type": "output_text", "text": response_content}],
+                    "content": [{"type": "output_text", "text": final_content}],
                 },
             )
         except Exception as e:

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Literal, TypedDict
+from collections.abc import Generator
+from typing import Annotated, Any, Literal, TypedDict
 
 import mlflow
 from langchain_core.messages import (
@@ -15,11 +16,14 @@ from langchain_core.messages import (
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
+from databricks.sdk import WorkspaceClient
+from databricks_langchain import ChatDatabricks
+
 from .config import AgentConfig
 from .tools import (
     AGENT_TOOLS,
+    ToolContext,
     build_skill_context,
-    create_llm,
     handle_tool_call,
 )
 
@@ -31,6 +35,7 @@ class AgentState(TypedDict):
 
     messages: Annotated[list[BaseMessage], add_messages]
     iteration_count: int
+    tool_context: ToolContext
 
 
 class DocumentAgent:
@@ -38,10 +43,22 @@ class DocumentAgent:
 
     def __init__(self, config: AgentConfig | None = None):
         self.config = config or AgentConfig.from_env()
-        self.llm = create_llm(self.config)
+        self.llm = ChatDatabricks(
+            endpoint=self.config.model_endpoint,
+            workspace_client=self._create_workspace_client(),
+            temperature=0.1,
+        )
         self.skill_context = build_skill_context(self.config)
         self.system_prompt = self._build_system_prompt()
         self._compiled_graph = None
+
+    def _create_workspace_client(self) -> WorkspaceClient:
+        """Create workspace client using runtime identity or local profile."""
+        if self.config.is_running_in_databricks:
+            return WorkspaceClient()
+        if self.config.databricks_profile:
+            return WorkspaceClient(profile=self.config.databricks_profile)
+        return WorkspaceClient()
 
     def _build_system_prompt(self) -> str:
         """Build the system prompt with skill and storage context."""
@@ -86,6 +103,7 @@ All generated files are saved to Unity Catalog Volume:
         """Main agent node - calls the LLM with tools."""
         messages = self._ensure_system_prompt(state["messages"])
         iteration = state.get("iteration_count", 0)
+        tool_context = state.get("tool_context") or ToolContext()
 
         logger.info("[agent_node] Iteration %s with %s message(s)", iteration + 1, len(messages))
         try:
@@ -102,13 +120,20 @@ All generated files are saved to Unity Catalog Volume:
         return {
             "messages": [response],
             "iteration_count": iteration + 1,
+            "tool_context": tool_context,
         }
 
     def tool_node(self, state: AgentState) -> AgentState:
         """Execute tool calls from the LLM response."""
         messages = state["messages"]
+        tool_context = state.get("tool_context") or ToolContext()
+
         if not messages:
-            return {"messages": [], "iteration_count": state.get("iteration_count", 0)}
+            return {
+                "messages": [],
+                "iteration_count": state.get("iteration_count", 0),
+                "tool_context": tool_context,
+            }
 
         last_message = messages[-1]
         tool_messages: list[ToolMessage] = []
@@ -131,7 +156,7 @@ All generated files are saved to Unity Catalog Volume:
                             "tool_args": tool_args,
                         }
                     )
-                    result = handle_tool_call(self.config, tool_name, tool_args)
+                    result = handle_tool_call(self.config, tool_name, tool_args, tool_context)
                     span.set_outputs({"result": result})
 
                 logger.info("[tool_node] Tool '%s' completed", tool_name)
@@ -142,7 +167,11 @@ All generated files are saved to Unity Catalog Volume:
                         tool_call_id=tool_id,
                     )
                 )
-        return {"messages": tool_messages, "iteration_count": state.get("iteration_count", 0)}
+        return {
+            "messages": tool_messages,
+            "iteration_count": state.get("iteration_count", 0),
+            "tool_context": tool_context,
+        }
 
     def should_continue(self, state: AgentState) -> Literal["tools", "end"]:
         """Determine if the agent should continue or end."""
@@ -198,16 +227,40 @@ All generated files are saved to Unity Catalog Volume:
 
     def invoke(self, messages: list[BaseMessage], iteration_count: int = 0):
         """Invoke the agent graph with the provided messages."""
-        prepared_messages = self._ensure_system_prompt(messages)
         logger.info(
             "Invoking DocumentAgent with %s input message(s), iteration_count=%s",
-            len(prepared_messages),
+            len(messages),
             iteration_count,
         )
         return self.build().invoke(
             {
-                "messages": prepared_messages,
+                "messages": messages,
                 "iteration_count": iteration_count,
+                "tool_context": ToolContext(),
             }
         )
+
+    def stream(
+        self, messages: list[BaseMessage], iteration_count: int = 0
+    ) -> Generator[dict[str, Any], None, None]:
+        """Stream the agent graph execution, yielding state updates as they occur.
+
+        Yields:
+            State update dicts containing node name and updated state values.
+            Each update includes the node that produced it and the state changes.
+        """
+        logger.info(
+            "Streaming DocumentAgent with %s input message(s), iteration_count=%s",
+            len(messages),
+            iteration_count,
+        )
+        initial_state = {
+            "messages": messages,
+            "iteration_count": iteration_count,
+            "tool_context": ToolContext(),
+        }
+
+        # stream_mode="updates" yields {node_name: state_update} after each node
+        for update in self.build().stream(initial_state, stream_mode="updates"):
+            yield update
 
