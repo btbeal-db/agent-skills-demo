@@ -29,11 +29,8 @@ class ToolContext:
     """
 
     def __init__(self):
-        # Store the last execute_python result for use by save_to_volume
         self.last_execute_result: dict[str, str] = {}
-        # Store the last read_from_volume payload for use by execute_python
         self.last_read_from_volume: dict[str, Any] = {}
-        # Persistent working directory for bash commands within a session
         self.bash_working_directory: str | None = None
 
 
@@ -374,10 +371,6 @@ def copy_file_to_current_session(
             "target_path": None,
         }
 
-
-# =============================================================================
-# Python-based Document Operations
-# =============================================================================
 
 def execute_python_code(code: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Execute Python code in a controlled environment."""
