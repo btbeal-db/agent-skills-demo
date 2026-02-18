@@ -88,6 +88,10 @@ class DocumentResponsesAgent(ResponsesAgent):
             return self._build_response("No input provided")
 
         try:
+            # Generate a fresh session_id per request so each invocation
+            # gets its own output directory in UC Volume.
+            self.config.session_id = str(uuid.uuid4())[:8]
+
             lc_messages = self._to_langchain_messages(request.input)
             result = self.document_agent.invoke(lc_messages, iteration_count=0)
             response_content = self._extract_final_response_content(result)
@@ -118,6 +122,8 @@ class DocumentResponsesAgent(ResponsesAgent):
             return
 
         try:
+            self.config.session_id = str(uuid.uuid4())[:8]
+
             lc_messages = self._to_langchain_messages(request.input)
             item_id = "msg_" + str(self.config.session_id)
             final_content = ""

@@ -57,7 +57,7 @@ def main() -> int:
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=180) as response:
             body = response.read().decode("utf-8", errors="replace")
             print(f"Response status: {response.status}")
             print(json.dumps(json.loads(body), indent=2))
