@@ -7,6 +7,9 @@ import binascii
 import logging
 import os
 import shutil
+import subprocess
+import sys
+import tempfile
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -30,6 +33,8 @@ class ToolContext:
         self.last_execute_result: dict[str, str] = {}
         # Store the last read_from_volume payload for use by execute_python
         self.last_read_from_volume: dict[str, Any] = {}
+        # Persistent working directory for bash commands within a session
+        self.bash_working_directory: str | None = None
 
 
 def _get_workspace_client(config: AgentConfig) -> WorkspaceClient:
@@ -377,19 +382,21 @@ def copy_file_to_current_session(
 def execute_python_code(code: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Execute Python code in a controlled environment."""
     try:
-        exec_globals = {"__builtins__": __builtins__}
+        # Use a single namespace dict so imports, assignments, and function
+        # definitions all share the same scope (avoids the exec() split-scope
+        # bug where functions can't see names imported into exec_locals).
+        exec_namespace: dict[str, Any] = {"__builtins__": __builtins__}
         if context:
-            exec_globals.update(context)
+            exec_namespace.update(context)
 
-        exec_locals: dict[str, Any] = {}
-        exec(code, exec_globals, exec_locals)
+        exec(code, exec_namespace)
 
-        result = exec_locals.get("result", exec_locals.get("output", None))
+        result = exec_namespace.get("result", exec_namespace.get("output", None))
 
         return {
             "success": True,
             "result": result,
-            "locals": {k: str(v)[:200] for k, v in exec_locals.items() if not k.startswith("_")}
+            "locals": {k: str(v)[:200] for k, v in exec_namespace.items() if not k.startswith("_")}
         }
 
     except Exception as e:
@@ -397,6 +404,71 @@ def execute_python_code(code: str, context: dict[str, Any] | None = None) -> dic
             "success": False,
             "error": str(e),
             "result": None
+        }
+
+
+def execute_bash_command(
+    command: str,
+    working_directory: str | None = None,
+    timeout: int = 120,
+) -> dict[str, Any]:
+    """Execute a bash command in a subprocess."""
+    try:
+        if working_directory is None:
+            working_directory = tempfile.mkdtemp(prefix="agent_bash_")
+
+        os.makedirs(working_directory, exist_ok=True)
+
+        # Ensure 'python' resolves even if only 'python3' is on the PATH.
+        # Use a wrapper script (not a symlink) so the real executable's venv
+        # detection via pyvenv.cfg continues to work.
+        python_bin_dir = os.path.join(working_directory, ".bin")
+        os.makedirs(python_bin_dir, exist_ok=True)
+        python_wrapper = os.path.join(python_bin_dir, "python")
+        if not os.path.lexists(python_wrapper):
+            real_python = os.path.abspath(sys.executable)
+            with open(python_wrapper, "w") as f:
+                f.write(f"#!/bin/sh\nexec {real_python} \"$@\"\n")
+            os.chmod(python_wrapper, 0o755)
+
+        env = os.environ.copy()
+        env["PATH"] = f"{python_bin_dir}:{env.get('PATH', '')}"
+
+        result = subprocess.run(
+            command,
+            shell=True,
+            cwd=working_directory,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+
+        return {
+            "success": result.returncode == 0,
+            "stdout": result.stdout[-4000:] if len(result.stdout) > 4000 else result.stdout,
+            "stderr": result.stderr[-2000:] if len(result.stderr) > 2000 else result.stderr,
+            "returncode": result.returncode,
+            "working_directory": working_directory,
+        }
+
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "error": f"Command timed out after {timeout}s",
+            "stdout": "",
+            "stderr": "",
+            "returncode": -1,
+            "working_directory": working_directory or "",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "stdout": "",
+            "stderr": "",
+            "returncode": -1,
+            "working_directory": working_directory or "",
         }
 
 
@@ -444,6 +516,27 @@ AGENT_TOOLS = [
                     }
                 },
                 "required": ["code"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_bash",
+            "description": "Execute a bash shell command. Use for running Python helper scripts (unpack, pack, validate, comment, accept_changes) and other shell operations needed by skills. The working directory persists across calls within a session.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The bash command to execute"
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in seconds (default: 120)"
+                    }
+                },
+                "required": ["command"]
             }
         }
     },
@@ -531,8 +624,14 @@ def handle_tool_call(
 
         if skill_name in skill_lookup:
             resolved_id = skill_lookup[skill_name]
+            skill_dir = config.get_skill_path(resolved_id)
             content = load_skill_instructions(config, resolved_id)
-            return f"Loaded skill: {resolved_id}\n\n{content}"
+            return (
+                f"Loaded skill: {resolved_id}\n"
+                f"Skill directory: {skill_dir}\n"
+                f"Scripts path: {skill_dir}/scripts\n\n"
+                f"{content}"
+            )
 
         return f"Skill '{skill_name}' not found. Available: {', '.join(config.available_skills)}"
 
@@ -569,6 +668,39 @@ def handle_tool_call(
                         output += f"\nResult: {result_str}"
             return output
         return f"Code execution failed: {result['error']}"
+
+    elif tool_name == "execute_bash":
+        command = tool_args.get("command", "")
+        timeout = tool_args.get("timeout", 120)
+
+        if tool_context.bash_working_directory is None:
+            tool_context.bash_working_directory = tempfile.mkdtemp(prefix="agent_bash_")
+
+        result = execute_bash_command(
+            command,
+            working_directory=tool_context.bash_working_directory,
+            timeout=timeout,
+        )
+
+        tool_context.bash_working_directory = result.get(
+            "working_directory", tool_context.bash_working_directory
+        )
+
+        output_parts = []
+        if result["success"]:
+            output_parts.append("Command executed successfully.")
+        else:
+            output_parts.append(f"Command failed (exit code {result['returncode']}).")
+            if result.get("error"):
+                output_parts.append(f"Error: {result['error']}")
+
+        if result.get("stdout"):
+            output_parts.append(f"stdout:\n{result['stdout']}")
+        if result.get("stderr"):
+            output_parts.append(f"stderr:\n{result['stderr']}")
+
+        output_parts.append(f"Working directory: {result['working_directory']}")
+        return "\n".join(output_parts)
 
     elif tool_name == "save_to_volume":
         content = tool_args.get("content_base64", "")

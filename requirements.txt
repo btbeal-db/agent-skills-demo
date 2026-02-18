@@ -69,6 +69,8 @@ cloudpickle==3.1.2
     # via
     #   mlflow-skinny
     #   unitycatalog-ai
+cobble==0.1.4
+    # via mammoth
 colorama==0.4.6
     # via griffe
 contourpy==1.3.3
@@ -300,6 +302,8 @@ lxml==6.0.2
     #   python-docx
 mako==1.3.10
     # via alembic
+mammoth==1.11.0
+    # via agent-skills-demo (pyproject.toml)
 markdown-it-py==4.0.0
     # via rich
 markupsafe==3.0.3
@@ -470,6 +474,8 @@ pygments==2.19.2
     # via rich
 pyjwt==2.11.0
     # via mcp
+pymupdf==1.27.1
+    # via agent-skills-demo (pyproject.toml)
 pyparsing==3.3.2
     # via matplotlib
 python-dateutil==2.9.0.post0
@@ -494,6 +500,7 @@ pytz==2025.2
     # via pandas
 pyyaml==6.0.3
     # via
+    #   agent-skills-demo (pyproject.toml)
     #   huggingface-hub
     #   langchain-classic
     #   langchain-community

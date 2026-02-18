@@ -16,6 +16,7 @@ sync:
     - app.yaml
     - start_server.py
     - pyproject.toml
+    - requirements.txt
     - uv.lock
     - agent/**
     - .claude/skills/**

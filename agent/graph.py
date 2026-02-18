@@ -58,11 +58,18 @@ class DocumentAgent:
 
 1. Review the available skill descriptions in the system prompt.
 2. When a request matches a skill, call `load_skill` to load the full instructions on demand.
-3. If a source file is in another session, first use `copy_to_session` to duplicate it into the current session folder.
-4. For editing an existing file, use `read_from_volume` first, then use `execute_python` with `source_doc_bytes` (provided automatically by the tool flow).
-5. Follow the skill instructions and use `execute_python` for document operations.
-6. Use `save_to_volume` to save generated files to Unity Catalog for the user to access.
-7. Use `list_volume_files` to show the user what files have been created.
+3. `load_skill` returns the skill directory and scripts path — use these absolute paths when running helper scripts.
+4. If a source file is in another session, first use `copy_to_session` to duplicate it into the current session folder.
+5. Use `execute_python` for Python-based operations (python-docx, mammoth, PyMuPDF).
+6. Use `execute_bash` for running helper scripts (unpack, pack, validate, comment) and shell commands. The bash working directory persists across calls within a session.
+7. Use `save_to_volume` to save generated files to Unity Catalog for the user to access.
+8. Use `list_volume_files` to show the user what files have been created.
+
+## File Operations
+
+- The `execute_bash` tool provides a persistent working directory for intermediate files within a session.
+- To process a file from UC Volume: use `read_from_volume`, then `execute_python` to write bytes to the bash working directory, then `execute_bash` for processing with scripts.
+- To save a processed file to UC Volume: use `execute_python` to read the file bytes and base64-encode as `result`, then `save_to_volume`.
 
 ## File Output
 
@@ -74,7 +81,7 @@ All generated files are saved to Unity Catalog Volume:
 
 - Always load a skill's instructions before attempting to use it
 - Use progressive disclosure: keep only skill summaries in context until `load_skill` is needed
-- Follow the skill's documented Python patterns exactly
+- Follow the skill's documented workflows exactly
 - Never edit files directly in other sessions; copy them into the current session first
 - After creating a document, always save it with `save_to_volume`
 - Report the file path to the user after saving
