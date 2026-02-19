@@ -17,7 +17,7 @@ from databricks.sdk import WorkspaceClient
 from databricks_langchain import ChatDatabricks
 
 from .config import AgentConfig
-from .tools import AGENT_TOOLS, ToolContext, build_skill_context, handle_tool_call
+from .tools import AGENT_TOOLS, ToolContext, build_skill_context, handle_tool_call  # ToolContext used via from_dict/to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ class AgentState(TypedDict):
     """State for the agent workflow."""
     messages: Annotated[list[BaseMessage], add_messages]
     iteration_count: int
-    tool_context: ToolContext
+    tool_context: dict  # serialized ToolContext — kept as plain dict for checkpoint compatibility
     session_id: str
     input_tokens: Annotated[int, operator.add]
     output_tokens: Annotated[int, operator.add]
@@ -103,7 +103,7 @@ All generated files should be saved to this session's Unity Catalog Volume unles
 
         messages = self._ensure_system_prompt(state["messages"], request_config.session_output_path)
         iteration = state.get("iteration_count", 0)
-        tool_context = state.get("tool_context") or ToolContext()
+        tool_context = ToolContext.from_dict(state.get("tool_context") or {})
 
         logger.info("[agent_node] Iteration %s with %s message(s)", iteration + 1, len(messages))
         response = self.llm.invoke(messages, tools=AGENT_TOOLS)
@@ -119,7 +119,7 @@ All generated files should be saved to this session's Unity Catalog Volume unles
         return {
             "messages": [response],
             "iteration_count": iteration + 1,
-            "tool_context": tool_context,
+            "tool_context": tool_context.to_dict(),
             "session_id": session_id,
             "input_tokens": usage.get("input_tokens", 0),
             "output_tokens": usage.get("output_tokens", 0),
@@ -130,13 +130,13 @@ All generated files should be saved to this session's Unity Catalog Volume unles
         messages = state["messages"]
         session_id = state.get("session_id") or self.config.session_id
         request_config = self._get_request_config(session_id)
-        tool_context = state.get("tool_context") or ToolContext()
+        tool_context = ToolContext.from_dict(state.get("tool_context") or {})
 
         if not messages:
             return {
                 "messages": [],
                 "iteration_count": state.get("iteration_count", 0),
-                "tool_context": tool_context,
+                "tool_context": tool_context.to_dict(),
                 "session_id": session_id,
             }
 
@@ -165,7 +165,7 @@ All generated files should be saved to this session's Unity Catalog Volume unles
         return {
             "messages": tool_messages,
             "iteration_count": state.get("iteration_count", 0),
-            "tool_context": tool_context,
+            "tool_context": tool_context.to_dict(),
             "session_id": session_id,
         }
 
@@ -214,7 +214,7 @@ All generated files should be saved to this session's Unity Catalog Volume unles
                 "messages": messages,
                 "session_id": session_id,
                 "iteration_count": iteration_count,
-                "tool_context": ToolContext(),
+                "tool_context": {},
                 "input_tokens": 0,
                 "output_tokens": 0,
             },
@@ -239,7 +239,7 @@ All generated files should be saved to this session's Unity Catalog Volume unles
             "messages": messages,
             "session_id": session_id,
             "iteration_count": iteration_count,
-            "tool_context": ToolContext(),
+            "tool_context": {},
             "input_tokens": 0,
             "output_tokens": 0,
         }

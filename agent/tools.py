@@ -33,6 +33,21 @@ class ToolContext:
         self.last_read_from_volume: dict[str, Any] = {}
         self.bash_working_directory: str | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "last_execute_result": self.last_execute_result,
+            "last_read_from_volume": self.last_read_from_volume,
+            "bash_working_directory": self.bash_working_directory,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ToolContext":
+        ctx = cls()
+        ctx.last_execute_result = data.get("last_execute_result") or {}
+        ctx.last_read_from_volume = data.get("last_read_from_volume") or {}
+        ctx.bash_working_directory = data.get("bash_working_directory")
+        return ctx
+
 
 def _get_workspace_client(config: AgentConfig) -> WorkspaceClient:
     """Create a workspace client using runtime identity or local profile."""

@@ -1,208 +1,181 @@
 # Agent Skills Demo
 
-Minimal example of a **Databricks agent** integrating **Claude Agent Skills** using the **LangGraph** framework. This version uses **Python-only** skills and saves output to **Unity Catalog Volumes**.
+A **Databricks App** serving a multi-turn LangGraph agent with [Claude Agent Skills](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview). The agent uses filesystem-based skills for progressive disclosure and saves all output to Unity Catalog Volumes.
 
 ## Architecture
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│                    LangGraph Workflow                          │
-│  ┌─────────────┐    ┌─────────────┐    ┌────────────────────┐  │
-│  │   Agent     │───▶│    Tools    │───▶│   Agent            │  │
-│  │   Node      │◀───│    Node     │    │   (repeat)         │  │
-│  └──────┬──────┘    └──────┬──────┘    └────────────────────┘  │
-│         │                  │                                   │
-│         │           ┌──────▼──────┐                            │
-│         │           │  execute_python                          │
-│         │           │  save_to_volume                          │
-│         │           │  load_skill                              │
-│         │           └──────┬──────┘                            │
-│         │                  │                                   │
-│         └──────────────────┼───────────────────────────────────┘
-│                            │
-│                   ┌────────▼────────┐
-│                   │  ChatDatabricks │
-│                   │  (GPT-5-2)      │
-│                   └─────────────────┘
-└────────────────────────────────────────────────────────────────┘
-                             │
-          ┌──────────────────┼──────────────────┐
-          │                  │                  │
-          ▼                  ▼                  ▼
-   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-   │  .claude/   │    │  python-    │    │  UC Volume  │
-   │   skills/   │    │   docx      │    │  /Volumes/  │
-   │   └─docx/   │    │  (library)  │    │  btbeal/... │
-   └─────────────┘    └─────────────┘    └─────────────┘
+Databricks App (FastAPI / MLflow Agent Server)
+       │
+       ▼
+DocumentResponsesAgent          ← per-request: derives thread_id, session_id
+       │
+       ▼
+DocumentAgent (LangGraph)       ← MemorySaver checkpointer, keyed by thread_id
+  ┌────────────┐   ┌────────────┐
+  │ agent_node │◀──│  tool_node │
+  │  (LLM)     │──▶│  (tools)   │
+  └────────────┘   └────────────┘
+       │
+       ▼
+  UC Volume output  /Volumes/…/{session_id}/
 ```
 
-## Features
-
-- **LangGraph** for workflow orchestration with a ReAct-style agent loop
-- **ChatDatabricks** integration using the `databricks-gpt-5-2` endpoint
-- **Python-only skills** - no Node.js, npm, or shell commands required
-- **Unity Catalog Volume output** - generated files saved to `/Volumes/btbeal/docx_agent_skills_demo/created_docs`
-- **Databricks SDK profile** support (`FE-EAST`)
-- **Deployable to Model Serving** - Python-only design works in Databricks serving environment
+**Multi-turn isolation:** each conversation gets a `thread_id = user_email:conversation_id`. LangGraph's `MemorySaver` checkpoints the full message history per thread, so follow-up questions have full context. Different users/conversations never share state.
 
 ## Project Structure
 
 ```
 agent-skills-demo/
-├── main.py                      # Entry point
-├── pyproject.toml               # UV package management
-├── src/
-│   └── agent/
-│       ├── __init__.py
-│       ├── config.py            # Databricks, UC Volume & Skills configuration
-│       ├── graph.py             # LangGraph workflow definition
-│       └── tools.py             # Tools: execute_python, save_to_volume, etc.
-└── .claude/
-    └── skills/
-        └── docx/                # Python-only docx skill
-            └── SKILL.md         # Skill instructions using python-docx
+├── agent/
+│   ├── config.py            # AgentConfig — env vars, UC Volume path, skills dir
+│   ├── graph.py             # LangGraph workflow (DocumentAgent)
+│   ├── tools.py             # Tool implementations + ToolContext
+│   ├── responses_agent.py   # MLflow ResponsesAgent wrapper + thread_id logic
+│   └── __init__.py
+├── app.py                   # @invoke / @stream handlers (MLflow Agent Server)
+├── start_server.py          # Entrypoint: starts uvicorn via AgentServer
+├── app.yaml                 # Databricks App config (env vars, resources)
+├── pyproject.toml
+└── bin/
+    ├── test_app_endpoint.py # Test client (interactive REPL + single-shot)
+    └── get_traces.py        # Fetch a trace by ID from MLflow
+.claude/
+└── skills/
+    └── docx/
+        └── SKILL.md         # Word document skill (create, edit, analyze)
 ```
 
 ## Prerequisites
 
-1. **Databricks CLI configured** with the `FE-EAST` profile in `~/.databrickscfg`:
-   ```ini
-   [FE-EAST]
-   host = https://your-workspace.cloud.databricks.com
-   token = your-token
-   ```
+- **Python 3.10–3.11**
+- **Databricks CLI** used to deploy the bundle and app
+- Access to the Unity Catalog Volume defined in `AGENT_UC_VOLUME_PATH`
 
-2. **Unity Catalog Volume** exists at:
-   ```
-   /Volumes/btbeal/docx_agent_skills_demo/created_docs
-   ```
-
-3. **Python 3.10-3.11** (required for Databricks compatibility)
-
-## Installation
+## Local Development
 
 ```bash
-# Enter the project
-cd agent-skills-demo
-
-# Install dependencies with uv
+# Install dependencies
 uv sync
 
-# Verify the setup
-uv run python -c "from src.agent import AgentConfig; c = AgentConfig(); print(f'Skills: {c.available_skills}')"
+# Start the agent server locally (port 8000 by default)
+uv run start_server.py
+
+# With multiple workers
+uv run start_server.py --workers 4
+
+# On a custom port
+uv run start_server.py --port 9000
 ```
 
-## Usage
+The server exposes:
+- `POST /invocations` — standard MLflow Responses API endpoint
+- `GET /health` — health check
+- `GET /agent/info` — agent metadata
 
-### Interactive Mode
+### Environment Variables
+
+Copy from `app.yaml` or set directly:
+
+| Variable | Default | Description |
+|---|---|---|
+| `AGENT_MODEL_ENDPOINT` | `databricks-gpt-5-2` | Databricks model serving endpoint |
+| `AGENT_UC_VOLUME_PATH` | _(required)_ | UC Volume root for output files |
+| `AGENT_OUTPUT_MODE` | `auto` | `auto`, `uc_volume`, or `local` |
+| `AGENT_SKILLS_DIR` | `./.claude/skills` | Path to skills directory |
+| `AGENT_MAX_ITERATIONS` | `10` | Max LangGraph iterations per request |
+| `MLFLOW_EXPERIMENT_ID` | — | MLflow experiment for tracing |
+| `DATABRICKS_CONFIG_PROFILE` | — | Databricks CLI profile (local dev) |
+
+## Testing the Deployed App
+
+### Interactive REPL (multi-turn)
 
 ```bash
-uv run python main.py
+uv run bin/test_app_endpoint.py
 ```
 
-### Programmatic Usage
+```
+Multi-turn session  conversation_id=3f2a1b4c-…
+Type your message and press Enter. Use 'quit' or Ctrl-D to exit.
 
-```python
-from src.agent import AgentConfig, create_agent_graph
-from langchain_core.messages import HumanMessage
+you> Create a quarterly status report as a Word doc
+agent> I've created the report and saved it to …
+  [session=a1b2c3d4  path=/Volumes/…/a1b2c3d4/quarterly_report.docx]
 
-# Create config
-config = AgentConfig(
-    databricks_profile="FE-EAST",
-    model_endpoint="databricks-gpt-5-2",
-    uc_volume_path="/Volumes/btbeal/docx_agent_skills_demo/created_docs",
-)
-
-# Create the LangGraph workflow
-graph = create_agent_graph(config)
-
-# Run a query
-result = graph.invoke({
-    "messages": [HumanMessage(content="Create a Word document with a project status report")],
-    "iteration_count": 0,
-})
-
-# Get the response
-for msg in reversed(result["messages"]):
-    if hasattr(msg, "content"):
-        print(msg.content)
-        break
+you> Add an executive summary section at the top
+agent> Done — the executive summary has been added …
 ```
 
-### Custom Configuration
+The same `conversation_id` is sent with every turn so the server routes all messages to the same LangGraph checkpoint.
 
-```python
-from src.agent import AgentConfig
+### Single-shot
 
-config = AgentConfig(
-    databricks_profile="CUSTOM-PROFILE",
-    model_endpoint="your-model-endpoint",
-    uc_volume_path="/Volumes/your_catalog/your_schema/your_volume",
-    max_iterations=5,
-    session_id="custom-session-123",  # Optional: auto-generated if not set
-)
+```bash
+uv run bin/test_app_endpoint.py "List the skills available"
 ```
+
+### Fetching Traces
+
+```bash
+uv run bin/get_traces.py <trace_id>
+```
+
+`trace_id` is returned in the MLflow response metadata when `x-mlflow-return-trace-id: true` is set on the request.
 
 ## Available Tools
 
 | Tool | Description |
-|------|-------------|
-| `load_skill` | Load full instructions from a skill's SKILL.md |
-| `execute_python` | Execute Python code (python-docx, etc.) |
-| `save_to_volume` | Save files to Unity Catalog Volume |
-| `read_from_volume` | Read files from Unity Catalog Volume |
-| `list_volume_files` | List files in the session's output directory |
+|---|---|
+| `list_skills` | List all skills discovered in the skills directory |
+| `load_skill` | Load full SKILL.md instructions for a skill |
+| `execute_python` | Execute Python code; result available to `save_to_volume` |
+| `execute_bash` | Run shell commands; working directory persists within a turn |
+| `save_to_volume` | Save a file to the session's UC Volume directory |
+| `read_from_volume` | Read a file from the session's UC Volume directory |
+| `copy_to_session` | Copy a file from another session into the current one |
+| `list_volume_files` | List files in the current session's output directory |
 
 ## How Skills Work
 
-This demo implements the [Claude Agent Skills](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview) pattern, adapted for Databricks:
+1. **Discovery** — at startup, the agent scans `.claude/skills/` for directories containing `SKILL.md`
+2. **Progressive disclosure** — only skill names and descriptions go into the system prompt; full instructions are loaded on demand via `load_skill`
+3. **Execution** — skills run via `execute_python` or `execute_bash` and write output via `save_to_volume`
 
-1. **Skill Discovery**: Skills are filesystem-based resources in `.claude/skills/`
-2. **Metadata Loading**: YAML frontmatter in `SKILL.md` describes when to use the skill
-3. **Progressive Disclosure**: Full instructions are loaded only when the skill is triggered
-4. **Python Execution**: Code runs via `exec()` and each skill imports its own dependencies
-5. **UC Volume Output**: Generated files saved to Unity Catalog for user access
+### Adding a Skill
 
-## Example Prompts
-
-Try these with the docx skill:
+Create a directory under `.claude/skills/` with a `SKILL.md` file:
 
 ```
-"Create a Word document with the title 'Project Report' and three bullet points"
-
-"Create a quarterly status report with a table showing milestone progress"
-
-"List the files I've created in this session"
+.claude/skills/my-skill/
+└── SKILL.md        # YAML frontmatter: name, description; body: instructions
 ```
 
-## Deploying to Model Serving
+```markdown
+---
+name: My Skill
+description: One-line description shown in the system prompt
+---
 
-This agent is designed to work in Databricks Model Serving:
+## Instructions
 
-1. **No system dependencies** - Uses only pip-installable Python packages
-2. **No shell execution** - All operations via Python code
-3. **UC Volume storage** - Files accessible across the Databricks workspace
-4. **Stateless** - Each session gets a unique ID for output organization
-
-### Logging with MLflow
-
-```python
-import mlflow
-from src.agent import create_agent_graph, AgentConfig
-
-# Log the agent
-with mlflow.start_run():
-    mlflow.langchain.log_model(
-        lc_model=create_agent_graph(AgentConfig()),
-        artifact_path="agent",
-        registered_model_name="docx-agent",
-    )
+Step-by-step instructions for the agent…
 ```
+
+## Deploying to Databricks Apps
+
+The app is configured by `app.yaml` and deployed via the Databricks CLI:
+
+```bash
+databricks apps deploy --profile FEVM
+```
+
+The app runs `python start_server.py` on startup. All output is written to the UC Volume configured via `AGENT_UC_VOLUME_PATH`.
 
 ## References
 
-- [Claude Agent Skills Overview](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
-- [python-docx Documentation](https://python-docx.readthedocs.io/)
-- [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
-- [Databricks LangChain Integration](https://docs.databricks.com/aws/en/generative-ai/agent-framework/langchain-uc-integration)
+- [Claude Agent Skills](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
+- [MLflow Agent Server](https://mlflow.org/docs/latest/genai/serving/agent-server/)
+- [LangGraph](https://langchain-ai.github.io/langgraph/)
+- [Databricks Apps](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/)
 - [Unity Catalog Volumes](https://docs.databricks.com/en/connect/unity-catalog/volumes.html)
