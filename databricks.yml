@@ -55,6 +55,10 @@ resources:
 
 targets:
   dev:
+    resources:
+      apps:
+        document_agent:
+          name: ${var.app_name}-dev
     default: true
     workspace:
       profile: FEVM
