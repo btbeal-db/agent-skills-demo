@@ -30,6 +30,11 @@ if exp_id:
 
 def main() -> None:
     """Run the Agent Server locally."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger.info("Starting Agent Server")
     agent_server.run(app_import_string="start_server:app")
 
 

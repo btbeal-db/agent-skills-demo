@@ -210,8 +210,13 @@ fldChar2.set(qn('w:fldCharType'), 'end')
 run._r.append(fldChar2)
 ```
 
-### Validation
-After creating the file, validate it. If validation fails, unpack, fix the XML, and repack.
+### Next Step After Creation
+
+Once `execute_python` returns successfully (result reported as `<N bytes>` or `<N chars>`), **immediately call `save_to_volume` with just the `filename` parameter**. The result is passed through automatically. Do not add validation or intermediate steps.
+
+### Validation (Editing workflow only)
+
+Validation applies to the **XML editing workflow**, not to `python-docx`-created documents. Do not validate after `execute_python` document creation. If you do need to validate an edited file, run:
 ```bash
 python scripts/office/validate.py doc.docx
 ```
@@ -452,7 +457,9 @@ All files must be persisted to Unity Catalog Volumes. Use this pattern:
 
 **Creating a new document (no input file):**
 1. `execute_python` — use `python-docx` to create the document, base64-encode the result
-2. `save_to_volume` — persist with filename
+2. `save_to_volume` — persist with filename (pass only `filename`; result bytes are passed through automatically)
+
+**After step 1 succeeds, go directly to step 2. Do not validate, do not add intermediate steps.**
 
 **Reading a document for text extraction:**
 1. `read_from_volume` — loads file content

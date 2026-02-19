@@ -19,28 +19,19 @@ DEFAULT_SKILLS_DIR = "./.claude/skills"
 @dataclass
 class AgentConfig:
     """Configuration for the Databricks agent with Claude Skills."""
-
-    # Databricks configuration
     databricks_profile: str = ""
     model_endpoint: str = "databricks-gpt-5-2"
-
-    # Unity Catalog Volume configuration for file output (used in Databricks)
     uc_volume_path: str = "/Volumes/hls_amer_catalog/appeals-review/created_docs"
-
-    # Local output directory (used when running outside Databricks)
     local_output_dir: str = "./output"
     output_mode: str = "auto"  # auto | uc_volume | local
-
-    # Skills configuration - accepts str or Path
     skills_directory: Path = field(default_factory=lambda: Path(DEFAULT_SKILLS_DIR))
-
     def __setattr__(self, name: str, value):
         """Convert skills_directory to Path if string is passed."""
         if name == "skills_directory" and isinstance(value, str):
             value = Path(value)
         super().__setattr__(name, value)
 
-    # Agent configuration
+    # Max agent iterations
     max_iterations: int = 10
 
     # Session ID for organizing outputs (auto-generated if not provided)
