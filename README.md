@@ -191,6 +191,32 @@ databricks apps deploy {your_app_name_here} --profile {your_profile_here}
 
 The app runs `python start_server.py` on startup. All output is written to the UC Volume configured via `AGENT_UC_VOLUME_PATH`.
 
+## Differences from Upstream Skills
+
+The skills in this repo are adapted from the [Anthropic skills library](https://github.com/anthropics/skills/tree/main/skills/docx) for a Databricks agent environment. Key changes:
+
+### Runtime environment
+
+The upstream skills are designed for general CLI/MCP use. This project runs them inside a LangGraph agent on Databricks Apps, so all file I/O goes through the Databricks Files API (`read_from_volume` / `save_to_volume`) rather than the local filesystem.
+
+### Python instead of Node.js
+
+| Capability | Upstream | This project |
+|---|---|---|
+| Create `.docx` | `docx-js` (Node.js) | `python-docx` (Python) |
+| Extract text | `pandoc` (system binary) | `mammoth` (Python package) |
+| PDF → image | `poppler-utils` (system binary) | `PyMuPDF` / `fitz` (Python package) |
+
+The Node.js and system-binary dependencies (`pandoc`, `poppler-utils`, LibreOffice) are not available in the Databricks Apps runtime, so they are replaced with pure-Python equivalents that produce equivalent results.
+
+### LibreOffice operations not available
+
+The upstream skill includes `accept_changes.py` (bulk-accept tracked changes) and `.doc` → `.docx` conversion via LibreOffice. Both are unavailable here. The workaround for tracked changes is the manual XML unpack/edit/repack workflow documented in the `docx` skill.
+
+### PDF skill
+
+The upstream library has a separate `pdf` skill; this project includes a version adapted for the same Databricks/UC Volume runtime as the `docx` skill, with a focus on filling blanks in PDF templates.
+
 ## References
 
 - [Claude Agent Skills](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
