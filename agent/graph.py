@@ -41,6 +41,7 @@ class DocumentAgent:
             endpoint=self.config.model_endpoint,
             workspace_client=self._create_workspace_client(),
             temperature=0.1,
+            request_timeout=self.config.llm_timeout,
         )
         self.skill_context = build_skill_context(self.config)
         self._checkpointer = MemorySaver()

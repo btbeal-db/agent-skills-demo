@@ -376,6 +376,7 @@
       <div class="controls-row">
         <span class="label">Auth Token (optional)</span>
         <input type="text" id="authToken" placeholder="Bearer token..." />
+        <button id="stopBtn" onclick="stopRequest()" disabled>Stop</button>
         <button id="sendBtn" onclick="sendMessage()">Send</button>
       </div>
     </div>
@@ -410,11 +411,21 @@
   const conversationId = uuidv4();
   const conversation  = document.getElementById('conversation');
   const sendBtn       = document.getElementById('sendBtn');
+  const stopBtn       = document.getElementById('stopBtn');
   const userInput     = document.getElementById('userInput');
   const authToken     = document.getElementById('authToken');
   const statusSession = document.getElementById('statusSession');
   const statusOutput  = document.getElementById('statusOutput');
   const statusReady   = document.getElementById('statusReady');
+
+  let currentController = null;
+
+  function stopRequest() {
+    if (currentController) {
+      currentController.abort();
+      currentController = null;
+    }
+  }
 
   let workspaceHost = '';
   fetch('/api/config')
@@ -578,6 +589,7 @@
     if (!text) return;
 
     sendBtn.disabled = true;
+    stopBtn.disabled = false;
     userInput.disabled = true;
     statusReady.textContent = 'Working...';
 
@@ -595,11 +607,14 @@
     const token = authToken.value.trim();
     if (token) headers['Authorization'] = 'Bearer ' + token;
 
+    currentController = new AbortController();
+
     try {
       const response = await fetch('/invocations', {
         method: 'POST',
         headers,
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: currentController.signal,
       });
 
       if (!response.ok) {
@@ -627,10 +642,17 @@
       if (customOutputs.output_path) statusOutput.textContent  = customOutputs.output_path;
 
     } catch (err) {
-      stopThinking('Error');
-      appendMessage('error', 'Request failed: ' + err.message);
+      if (err.name === 'AbortError') {
+        stopThinking('Stopped');
+        appendMessage('error', 'Request stopped by user.');
+      } else {
+        stopThinking('Error');
+        appendMessage('error', 'Request failed: ' + err.message);
+      }
     } finally {
+      currentController = null;
       sendBtn.disabled = false;
+      stopBtn.disabled = true;
       userInput.disabled = false;
       userInput.focus();
     }

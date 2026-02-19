@@ -34,6 +34,10 @@ class AgentConfig:
     # Max agent iterations
     max_iterations: int = 10
 
+    # Per-LLM-call HTTP timeout in seconds. Prevents the OpenAI client from
+    # retrying indefinitely when the endpoint is slow or unreachable.
+    llm_timeout: int = 120
+
     # Session ID for organizing outputs (auto-generated if not provided)
     session_id: Optional[str] = None
 
@@ -86,6 +90,7 @@ class AgentConfig:
                 os.getenv("SKILLS_DIR", DEFAULT_SKILLS_DIR),
             ),
             max_iterations=cls._env_int("AGENT_MAX_ITERATIONS", 10),
+            llm_timeout=cls._env_int("AGENT_LLM_TIMEOUT", 120),
             session_id=os.getenv("AGENT_SESSION_ID"),
         )
 
