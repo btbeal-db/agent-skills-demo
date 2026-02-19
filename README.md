@@ -224,3 +224,7 @@ The upstream library has a separate `pdf` skill; this project includes a version
 - [LangGraph](https://langchain-ai.github.io/langgraph/)
 - [Databricks Apps](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/)
 - [Unity Catalog Volumes](https://docs.databricks.com/en/connect/unity-catalog/volumes.html)
+
+## Disclaimer
+
+- This is just for the sake of demonstrating skills integration with databricks apps and is not intended to be immediately adapted for large-scale use
