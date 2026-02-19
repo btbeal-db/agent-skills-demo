@@ -6,6 +6,7 @@
   <title>Agent Chat</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -13,17 +14,22 @@
       background: #d4d0c8;
       font-family: "Roboto", Arial, sans-serif;
       font-size: 11px;
-      height: 100vh;
+      min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      overflow: hidden;
+      padding: 16px;
+      overflow: auto;
     }
 
-    /* Windows 95 window */
+    .desktop {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    /* Windows 95 window — shared */
     .window {
-      width: 680px;
-      max-width: 98vw;
       background: #c0c0c0;
       border-top: 2px solid #ffffff;
       border-left: 2px solid #ffffff;
@@ -33,6 +39,9 @@
       display: flex;
       flex-direction: column;
     }
+
+    .window.chat  { width: 680px; }
+    .window.info  { width: 220px; }
 
     /* Title bar */
     .title-bar {
@@ -114,9 +123,7 @@
       color: #000080;
     }
 
-    .message.agent .message-label {
-      color: #800000;
-    }
+    .message.agent .message-label { color: #800000; }
 
     .message-text {
       background: #f0f0f0;
@@ -125,33 +132,31 @@
       border-right: 1px solid #fff;
       border-bottom: 1px solid #fff;
       padding: 4px 6px;
-      white-space: pre-wrap;
       word-break: break-word;
       line-height: 1.5;
     }
 
-    .message.user .message-text {
-      background: #dde5f5;
-    }
+    .message.user  .message-text,
+    .message.error .message-text { white-space: pre-wrap; }
 
-    .message.error .message-label {
-      color: #cc0000;
-    }
+    .message.user  .message-text { background: #dde5f5; }
+    .message.error .message-label { color: #cc0000; }
+    .message.error .message-text  { background: #fff0f0; color: #cc0000; }
 
-    .message.error .message-text {
-      background: #fff0f0;
-      color: #cc0000;
-    }
+    /* Markdown content styles */
+    .message-text p          { margin: 0 0 6px; }
+    .message-text p:last-child { margin-bottom: 0; }
+    .message-text ul,
+    .message-text ol         { padding-left: 18px; margin: 4px 0 6px; }
+    .message-text li          { margin-bottom: 2px; }
+    .message-text strong      { font-weight: 700; }
+    .message-text em          { font-style: italic; }
+    .message-text code        { background: #e8e8e8; padding: 1px 3px; font-family: monospace; font-size: 10px; }
+    .message-text pre         { background: #e8e8e8; padding: 6px; overflow-x: auto; margin: 4px 0; }
+    .message-text pre code    { background: none; padding: 0; }
 
-    .message.thinking .message-label {
-      color: #b08080;
-    }
-
-    .message.thinking .message-text {
-      color: #aaa;
-      font-style: italic;
-      background: #f8f8f8;
-    }
+    .message.thinking .message-label { color: #b08080; }
+    .message.thinking .message-text  { color: #aaa; font-style: italic; background: #f8f8f8; }
 
     /* Input area */
     .input-panel {
@@ -181,10 +186,7 @@
       gap: 6px;
     }
 
-    .label {
-      white-space: nowrap;
-      color: #000;
-    }
+    .label { white-space: nowrap; color: #000; }
 
     input[type="text"] {
       flex: 1;
@@ -223,10 +225,7 @@
       padding: 4px 13px 2px 15px;
     }
 
-    button:disabled {
-      color: #808080;
-      cursor: default;
-    }
+    button:disabled { color: #808080; cursor: default; }
 
     /* Separator */
     .separator {
@@ -256,9 +255,7 @@
       gap: 4px;
     }
 
-    .status-label {
-      color: #404040;
-    }
+    .status-label { color: #404040; }
 
     .status-value {
       color: #000080;
@@ -268,60 +265,142 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+
+    /* Info panel */
+    .info-body {
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .info-section-title {
+      font-weight: 700;
+      font-size: 10px;
+      color: #000080;
+      margin-bottom: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .info-sunken {
+      border-top: 2px solid #808080;
+      border-left: 2px solid #808080;
+      border-right: 2px solid #fff;
+      border-bottom: 2px solid #fff;
+      background: #fff;
+      padding: 5px 6px;
+      line-height: 1.6;
+      color: #111;
+      overflow-wrap: break-word;
+      overflow: hidden;
+    }
+
+    .info-sunken ul {
+      padding-left: 14px;
+    }
+
+    .info-sunken li {
+      margin-bottom: 2px;
+    }
   </style>
 </head>
 <body>
 
-<div class="window">
-  <!-- Title bar -->
-  <div class="title-bar">
-    <span class="title-bar-text">Agent Chat</span>
-    <div class="title-bar-controls">
-      <div class="title-btn">_</div>
-      <div class="title-btn">□</div>
-      <div class="title-btn">✕</div>
+<div class="desktop">
+
+  <!-- Info panel -->
+  <div class="window info">
+    <div class="title-bar">
+      <span class="title-bar-text">About This Agent</span>
+      <div class="title-bar-controls">
+        <div class="title-btn">?</div>
+      </div>
+    </div>
+    <div class="info-body">
+
+      <div>
+        <div class="info-section-title">What it does</div>
+        <div class="info-sunken">
+          A document assistant that reads, summarizes, and creates Word documents (.docx) on your behalf using multi-turn conversation.
+        </div>
+      </div>
+
+      <div>
+        <div class="info-section-title">Reads from</div>
+        <div class="info-sunken">
+          <ul id="infoReads"><li>—</li></ul>
+        </div>
+      </div>
+
+      <div>
+        <div class="info-section-title">Writes to</div>
+        <div class="info-sunken">
+          <ul id="infoWrites"><li>—</li></ul>
+        </div>
+      </div>
+
+      <div>
+        <div class="info-section-title">Try asking</div>
+        <div class="info-sunken">
+          <ul>
+            <li>Make me a report on...</li>
+            <li>Summarize the doc at /Volumes/...</li>
+            <li>List all docs in my volume</li>
+            <li>Rewrite that with a formal tone</li>
+          </ul>
+        </div>
+      </div>
+
     </div>
   </div>
 
-  <!-- Window body -->
-  <div class="window-body">
-    <!-- Conversation history -->
-    <div class="conversation-panel" id="conversation"></div>
-
-    <!-- Input textarea -->
-    <div class="input-panel">
-      <textarea id="userInput" rows="3" placeholder="Type your message here... (Ctrl+Enter to send)"></textarea>
+  <!-- Chat window -->
+  <div class="window chat">
+    <div class="title-bar">
+      <span class="title-bar-text">Agent Chat</span>
+      <div class="title-bar-controls">
+        <div class="title-btn">_</div>
+        <div class="title-btn">□</div>
+        <div class="title-btn">✕</div>
+      </div>
     </div>
 
-    <!-- Auth token + Send -->
-    <div class="controls-row">
-      <span class="label">Auth Token (optional)</span>
-      <input type="text" id="authToken" placeholder="Bearer token..." />
-      <button id="sendBtn" onclick="sendMessage()">Send</button>
+    <div class="window-body">
+      <div class="conversation-panel" id="conversation"></div>
+
+      <div class="input-panel">
+        <textarea id="userInput" rows="3" placeholder="Type your message here... (Ctrl+Enter to send)"></textarea>
+      </div>
+
+      <div class="controls-row">
+        <span class="label">Auth Token (optional)</span>
+        <input type="text" id="authToken" placeholder="Bearer token..." />
+        <button id="sendBtn" onclick="sendMessage()">Send</button>
+      </div>
+    </div>
+
+    <hr class="separator">
+
+    <div class="status-bar">
+      <div class="status-segment">
+        <span class="status-label">Session:</span>
+        <span class="status-value" id="statusSession">—</span>
+      </div>
+      <div class="status-segment">
+        <span class="status-label">Output:</span>
+        <span class="status-value" id="statusOutput">—</span>
+      </div>
+      <div class="status-segment">
+        <span class="status-label">Status:</span>
+        <span class="status-value" id="statusReady">Ready</span>
+      </div>
     </div>
   </div>
 
-  <hr class="separator">
-
-  <!-- Status bar -->
-  <div class="status-bar">
-    <div class="status-segment">
-      <span class="status-label">Session:</span>
-      <span class="status-value" id="statusSession">—</span>
-    </div>
-    <div class="status-segment">
-      <span class="status-label">Output:</span>
-      <span class="status-value" id="statusOutput">—</span>
-    </div>
-    <div class="status-segment">
-      <span class="status-label">Status:</span>
-      <span class="status-value" id="statusReady">Ready</span>
-    </div>
-  </div>
-</div>
+</div><!-- .desktop -->
 
 <script>
-  // Generate a UUID for this tab's conversation
   function uuidv4() {
     return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
       (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
@@ -329,35 +408,37 @@
   }
 
   const conversationId = uuidv4();
-  const conversation = document.getElementById('conversation');
-  const sendBtn = document.getElementById('sendBtn');
-  const userInput = document.getElementById('userInput');
-  const authToken = document.getElementById('authToken');
+  const conversation  = document.getElementById('conversation');
+  const sendBtn       = document.getElementById('sendBtn');
+  const userInput     = document.getElementById('userInput');
+  const authToken     = document.getElementById('authToken');
   const statusSession = document.getElementById('statusSession');
-  const statusOutput = document.getElementById('statusOutput');
-  const statusReady = document.getElementById('statusReady');
+  const statusOutput  = document.getElementById('statusOutput');
+  const statusReady   = document.getElementById('statusReady');
 
   let workspaceHost = '';
-  fetch('/api/workspace-host')
+  fetch('/api/config')
     .then(r => r.json())
-    .then(d => { workspaceHost = d.host || ''; })
+    .then(d => {
+      workspaceHost = d.host || '';
+      const vol = d.volume_path || '';
+      if (vol) {
+        const li = `<li>${vol}</li>`;
+        document.getElementById('infoReads').innerHTML  = li;
+        document.getElementById('infoWrites').innerHTML = li;
+      }
+    })
     .catch(() => {});
 
-  // Ctrl+Enter to send
   userInput.addEventListener('keydown', function(e) {
-    if (e.ctrlKey && e.key === 'Enter') {
-      e.preventDefault();
-      sendMessage();
-    }
+    if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); sendMessage(); }
   });
 
-  // Build a Databricks volume explorer URL from a /Volumes/... path.
-  // /Volumes/<catalog>/<schema>/<volume>/...  →
-  // https://<workspace>/explore/data/volumes/<catalog>/<schema>/<volume>?volumePath=<encoded>
+  // Build Databricks volume explorer URL from a /Volumes/... path
   function databricksVolumeUrl(path) {
     const base = workspaceHost;
     if (!base) return null;
-    const parts = path.split('/').filter(Boolean); // ['Volumes', catalog, schema, volume, ...]
+    const parts = path.split('/').filter(Boolean);
     if (parts.length < 4) return null;
     const [, catalog, schema, volume] = parts;
     const dirPath = path.slice(0, path.lastIndexOf('/') + 1);
@@ -366,28 +447,38 @@
       + '?volumePath=' + encodeURIComponent(dirPath);
   }
 
-  // Linkify /Volumes/... paths in agent text
+  // Render markdown then linkify /Volumes/... paths in the resulting text nodes
   function renderAgentText(container, text) {
+    container.innerHTML = marked.parse(text);
+
     const pathPattern = /(\/Volumes\/[^\s,;'")\]]+)/g;
-    let last = 0;
-    let match;
-    while ((match = pathPattern.exec(text)) !== null) {
-      if (match.index > last) {
-        container.appendChild(document.createTextNode(text.slice(last, match.index)));
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    let node;
+    while ((node = walker.nextNode())) textNodes.push(node);
+
+    for (const textNode of textNodes) {
+      const val = textNode.nodeValue;
+      if (!val.includes('/Volumes/')) continue;
+
+      const frag = document.createDocumentFragment();
+      let last = 0, match;
+      pathPattern.lastIndex = 0;
+      while ((match = pathPattern.exec(val)) !== null) {
+        if (match.index > last) frag.appendChild(document.createTextNode(val.slice(last, match.index)));
+        const a = document.createElement('a');
+        const href = databricksVolumeUrl(match[1]);
+        a.href = href ?? match[1];
+        a.textContent = match[1];
+        a.title = 'Open in Databricks';
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.style.cssText = 'color:#000080;text-decoration:underline;';
+        frag.appendChild(a);
+        last = match.index + match[0].length;
       }
-      const a = document.createElement('a');
-      const href = databricksVolumeUrl(match[1]);
-      a.href = href ?? match[1];
-      a.textContent = match[1];
-      a.title = 'Open in Databricks';
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
-      a.style.cssText = 'color:#000080;text-decoration:underline;';
-      container.appendChild(a);
-      last = match.index + match[0].length;
-    }
-    if (last < text.length) {
-      container.appendChild(document.createTextNode(text.slice(last)));
+      if (last < val.length) frag.appendChild(document.createTextNode(val.slice(last)));
+      textNode.parentNode.replaceChild(frag, textNode);
     }
   }
 
@@ -430,7 +521,9 @@
     'Brewing a fresh pot of inference',
     'Petting the GPU',
   ];
-  let thinkingInterval = null;
+
+  let dotInterval    = null;
+  let phraseInterval = null;
 
   function startThinking() {
     const div = document.createElement('div');
@@ -451,22 +544,30 @@
 
     let phraseIdx = Math.floor(Math.random() * thinkingPhrases.length);
     let dots = 1;
-    let tick = 0;
     body.textContent = thinkingPhrases[phraseIdx] + '.';
-    thinkingInterval = setInterval(() => {
-      tick++;
+
+    // Dots animate at 500ms
+    dotInterval = setInterval(() => {
       dots = (dots % 3) + 1;
-      if (tick % 4 === 0) {
-        phraseIdx = (phraseIdx + 1) % thinkingPhrases.length;
-      }
       body.textContent = thinkingPhrases[phraseIdx] + '.'.repeat(dots);
       conversation.scrollTop = conversation.scrollHeight;
     }, 500);
+
+    // Phrase changes every 4s, randomly (never repeats the same one back-to-back)
+    phraseInterval = setInterval(() => {
+      let next;
+      do { next = Math.floor(Math.random() * thinkingPhrases.length); }
+      while (next === phraseIdx && thinkingPhrases.length > 1);
+      phraseIdx = next;
+      dots = 1;
+      body.textContent = thinkingPhrases[phraseIdx] + '.';
+    }, 4000);
   }
 
   function stopThinking(finalText) {
-    clearInterval(thinkingInterval);
-    thinkingInterval = null;
+    clearInterval(dotInterval);
+    clearInterval(phraseInterval);
+    dotInterval = phraseInterval = null;
     const thinkingMsg = document.getElementById('thinkingMsg');
     if (thinkingMsg) thinkingMsg.remove();
     statusReady.textContent = finalText;
@@ -476,14 +577,14 @@
     const text = userInput.value.trim();
     if (!text) return;
 
-    // Disable input while waiting
     sendBtn.disabled = true;
     userInput.disabled = true;
     statusReady.textContent = 'Working...';
-    startThinking();
 
+    // User message first, then thinking bubble below it
     appendMessage('user', text);
     userInput.value = '';
+    startThinking();
 
     const payload = {
       input: [{ role: 'user', content: text }],
@@ -492,9 +593,7 @@
 
     const headers = { 'Content-Type': 'application/json' };
     const token = authToken.value.trim();
-    if (token) {
-      headers['Authorization'] = 'Bearer ' + token;
-    }
+    if (token) headers['Authorization'] = 'Bearer ' + token;
 
     try {
       const response = await fetch('/invocations', {
@@ -506,13 +605,13 @@
       if (!response.ok) {
         let errText;
         try { errText = await response.text(); } catch(_) { errText = response.statusText; }
+        stopThinking('Error');
         appendMessage('error', 'HTTP ' + response.status + ': ' + errText);
         return;
       }
 
       const body = await response.json();
 
-      // Parse agent text from output
       let agentText = '';
       try {
         agentText = body.output[0].content[0].text;
@@ -520,21 +619,16 @@
         agentText = JSON.stringify(body.output ?? body, null, 2);
       }
 
+      stopThinking('Ready');
       appendMessage('agent', agentText);
 
-      // Update status bar
       const customOutputs = body.custom_outputs ?? {};
-      if (customOutputs.session_id) {
-        statusSession.textContent = customOutputs.session_id;
-      }
-      if (customOutputs.output_path) {
-        statusOutput.textContent = customOutputs.output_path;
-      }
-      stopThinking('Ready');
+      if (customOutputs.session_id)  statusSession.textContent = customOutputs.session_id;
+      if (customOutputs.output_path) statusOutput.textContent  = customOutputs.output_path;
 
     } catch (err) {
-      appendMessage('error', 'Request failed: ' + err.message);
       stopThinking('Error');
+      appendMessage('error', 'Request failed: ' + err.message);
     } finally {
       sendBtn.disabled = false;
       userInput.disabled = false;

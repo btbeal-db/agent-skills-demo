@@ -25,12 +25,15 @@ if _static_dir.exists():
     async def index():
         return FileResponse(str(_static_dir / "index.html"))
 
-    @app.get("/api/workspace-host")
-    async def workspace_host():
+    @app.get("/api/config")
+    async def config():
         host = os.getenv("DATABRICKS_HOST", "").rstrip("/")
         if host and not host.startswith("http"):
             host = "https://" + host
-        return JSONResponse({"host": host})
+        return JSONResponse({
+            "host": host,
+            "volume_path": os.getenv("AGENT_UC_VOLUME_PATH", ""),
+        })
 
 mlflow.set_tracking_uri("databricks")
 exp_id = os.getenv("MLFLOW_EXPERIMENT_ID")
