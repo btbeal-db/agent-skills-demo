@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import uuid
 from collections.abc import Generator
 from typing import Any
@@ -82,24 +84,51 @@ class DocumentResponsesAgent(ResponsesAgent):
             }]
         )
 
+    def _get_thread_id(self, request: ResponsesAgentRequest) -> str:
+        """Derive a stable thread_id for this user+conversation.
+
+        Uses the authenticated user's email (from Databricks App headers) combined
+        with a caller-supplied conversation_id from custom_inputs.  If no
+        conversation_id is provided a new UUID is generated, making the request
+        behave like a fresh single-turn conversation.
+        """
+        try:
+            from mlflow.genai.agent_server.server import get_request_headers
+            headers = get_request_headers()
+        except Exception:
+            headers = {}
+
+        user = headers.get("x-forwarded-email") or "anonymous"
+        custom_inputs = getattr(request, "custom_inputs", None) or {}
+        if not isinstance(custom_inputs, dict):
+            custom_inputs = {}
+        conversation_id = custom_inputs.get("conversation_id") or str(uuid.uuid4())
+        return f"{user}:{conversation_id}"
+
+    @staticmethod
+    def _session_id_from_thread(thread_id: str) -> str:
+        """Derive a stable 8-char session_id from a thread_id."""
+        return hashlib.md5(thread_id.encode()).hexdigest()[:8]
+
     def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
         """Handle non-streaming invocation."""
         if not request.input:
             return self._build_response("No input provided")
 
         try:
-            # Generate a fresh session_id per request so each invocation
-            # gets its own output directory in UC Volume.
-            self.config.session_id = str(uuid.uuid4())[:8]
+            thread_id = self._get_thread_id(request)
+            session_id = self._session_id_from_thread(thread_id)
 
             lc_messages = self._to_langchain_messages(request.input)
-            result = self.document_agent.invoke(lc_messages, iteration_count=0)
+            result = self.document_agent.invoke(lc_messages, session_id=session_id, iteration_count=0)
             response_content = self._extract_final_response_content(result)
 
             response = self._build_response(response_content)
+            session_config = dataclasses.replace(self.config, session_id=session_id)
             response.custom_outputs = {
-                "session_id": self.config.session_id,
-                "output_path": self.config.session_output_path,
+                "session_id": session_id,
+                "thread_id": thread_id,
+                "output_path": session_config.session_output_path,
             }
             return response
         except Exception as e:
@@ -122,14 +151,17 @@ class DocumentResponsesAgent(ResponsesAgent):
             return
 
         try:
-            self.config.session_id = str(uuid.uuid4())[:8]
+            thread_id = self._get_thread_id(request)
+            session_id = self._session_id_from_thread(thread_id)
 
             lc_messages = self._to_langchain_messages(request.input)
-            item_id = "msg_" + str(self.config.session_id)
+            item_id = "msg_" + session_id
             final_content = ""
             streamed_content_length = 0
 
-            for update in self.document_agent.stream(lc_messages, iteration_count=0):
+            for update in self.document_agent.stream(
+                lc_messages, session_id=session_id, iteration_count=0
+            ):
                 if "agent" in update:
                     agent_update = update["agent"]
                     messages = agent_update.get("messages", [])

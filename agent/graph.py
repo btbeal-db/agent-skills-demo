@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import operator
 from collections.abc import Generator
@@ -9,6 +10,7 @@ from typing import Annotated, Any, Literal, TypedDict
 
 import mlflow
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from databricks.sdk import WorkspaceClient
@@ -25,6 +27,7 @@ class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     iteration_count: int
     tool_context: ToolContext
+    session_id: str
     input_tokens: Annotated[int, operator.add]
     output_tokens: Annotated[int, operator.add]
 
@@ -40,7 +43,7 @@ class DocumentAgent:
             temperature=0.1,
         )
         self.skill_context = build_skill_context(self.config)
-        self.system_prompt = self._build_system_prompt()
+        self._checkpointer = MemorySaver()
         self._compiled_graph = None
 
     def _create_workspace_client(self) -> WorkspaceClient:
@@ -51,7 +54,7 @@ class DocumentAgent:
             return WorkspaceClient(profile=self.config.databricks_profile)
         return WorkspaceClient()
 
-    def _build_system_prompt(self) -> str:
+    def _build_system_prompt(self, session_output_path: str) -> str:
         """Build the system prompt with skill and storage context."""
         return f"""You are a helpful AI assistant with access to specialized skills and Unity Catalog storage.
 
@@ -63,7 +66,7 @@ class DocumentAgent:
 2. When a request matches a skill, call `load_skill` to load the full instructions on demand.
 
 All generated files should be saved to this session's Unity Catalog Volume unless the user requests otherwise.
-- Session path: {self.config.session_output_path}
+- Session path: {session_output_path}
 
 ## Guidelines
 
@@ -76,15 +79,29 @@ All generated files should be saved to this session's Unity Catalog Volume unles
 - If a skill isn't appropriate for the task, explain what you can and cannot do
 """
 
-    def _ensure_system_prompt(self, messages: list[BaseMessage]) -> list[BaseMessage]:
-        """Ensure the agent's canonical system prompt is present as the first message."""
-        if messages and isinstance(messages[0], SystemMessage) and messages[0].content == self.system_prompt:
+    def _get_request_config(self, session_id: str) -> AgentConfig:
+        """Return a config copy scoped to the given session_id."""
+        return dataclasses.replace(self.config, session_id=session_id)
+
+    def _ensure_system_prompt(
+        self, messages: list[BaseMessage], session_output_path: str
+    ) -> list[BaseMessage]:
+        """Ensure a system prompt is the first message.
+
+        On the first turn of a conversation there is no system prompt yet, so we
+        prepend one.  On subsequent turns the checkpoint already contains the
+        system prompt from the first turn, so we leave it in place.
+        """
+        if messages and isinstance(messages[0], SystemMessage):
             return messages
-        return [SystemMessage(content=self.system_prompt), *messages]
+        return [SystemMessage(content=self._build_system_prompt(session_output_path)), *messages]
 
     def agent_node(self, state: AgentState) -> AgentState:
         """Main agent node - calls the LLM with tools."""
-        messages = self._ensure_system_prompt(state["messages"])
+        session_id = state.get("session_id") or self.config.session_id
+        request_config = self._get_request_config(session_id)
+
+        messages = self._ensure_system_prompt(state["messages"], request_config.session_output_path)
         iteration = state.get("iteration_count", 0)
         tool_context = state.get("tool_context") or ToolContext()
 
@@ -103,6 +120,7 @@ All generated files should be saved to this session's Unity Catalog Volume unles
             "messages": [response],
             "iteration_count": iteration + 1,
             "tool_context": tool_context,
+            "session_id": session_id,
             "input_tokens": usage.get("input_tokens", 0),
             "output_tokens": usage.get("output_tokens", 0),
         }
@@ -110,10 +128,17 @@ All generated files should be saved to this session's Unity Catalog Volume unles
     def tool_node(self, state: AgentState) -> AgentState:
         """Execute tool calls from the LLM response."""
         messages = state["messages"]
+        session_id = state.get("session_id") or self.config.session_id
+        request_config = self._get_request_config(session_id)
         tool_context = state.get("tool_context") or ToolContext()
 
         if not messages:
-            return {"messages": [], "iteration_count": state.get("iteration_count", 0), "tool_context": tool_context}
+            return {
+                "messages": [],
+                "iteration_count": state.get("iteration_count", 0),
+                "tool_context": tool_context,
+                "session_id": session_id,
+            }
 
         last_message = messages[-1]
         tool_messages: list[ToolMessage] = []
@@ -131,7 +156,7 @@ All generated files should be saved to this session's Unity Catalog Volume unles
                     span.set_attribute("tool.name", tool_name)
                     span.set_attribute("tool.call_id", tool_id)
                     span.set_inputs({"tool_name": tool_name, "tool_args": tool_args})
-                    result = handle_tool_call(self.config, tool_name, tool_args, tool_context)
+                    result = handle_tool_call(request_config, tool_name, tool_args, tool_context)
                     span.set_outputs({"result": result})
 
                 logger.info("[tool_node] Tool '%s' completed", tool_name)
@@ -141,6 +166,7 @@ All generated files should be saved to this session's Unity Catalog Volume unles
             "messages": tool_messages,
             "iteration_count": state.get("iteration_count", 0),
             "tool_context": tool_context,
+            "session_id": session_id,
         }
 
     def should_continue(self, state: AgentState) -> Literal["tools", "end"]:
@@ -174,19 +200,26 @@ All generated files should be saved to this session's Unity Catalog Volume unles
         workflow.add_conditional_edges("agent", self.should_continue, {"tools": "tools", "end": END})
         workflow.add_edge("tools", "agent")
 
-        self._compiled_graph = workflow.compile()
+        self._compiled_graph = workflow.compile(checkpointer=self._checkpointer)
         return self._compiled_graph
 
-    def invoke(self, messages: list[BaseMessage], iteration_count: int = 0):
+    def invoke(self, messages: list[BaseMessage], session_id: str, iteration_count: int = 0):
         """Invoke the agent graph with the provided messages."""
-        logger.info("Invoking DocumentAgent with %s message(s)", len(messages))
-        final_state = self.build().invoke({
-            "messages": messages,
-            "iteration_count": iteration_count,
-            "tool_context": ToolContext(),
-            "input_tokens": 0,
-            "output_tokens": 0,
-        })
+        logger.info(
+            "Invoking DocumentAgent with %s message(s) [session=%s]", len(messages), session_id
+        )
+        thread_config = {"configurable": {"thread_id": session_id}}
+        final_state = self.build().invoke(
+            {
+                "messages": messages,
+                "session_id": session_id,
+                "iteration_count": iteration_count,
+                "tool_context": ToolContext(),
+                "input_tokens": 0,
+                "output_tokens": 0,
+            },
+            config=thread_config,
+        )
         logger.info(
             "[agent] Run complete. Total tokens — input=%s, output=%s",
             final_state.get("input_tokens", "n/a"),
@@ -194,18 +227,24 @@ All generated files should be saved to this session's Unity Catalog Volume unles
         )
         return final_state
 
-    def stream(self, messages: list[BaseMessage], iteration_count: int = 0) -> Generator[dict[str, Any], None, None]:
+    def stream(
+        self, messages: list[BaseMessage], session_id: str, iteration_count: int = 0
+    ) -> Generator[dict[str, Any], None, None]:
         """Stream the agent graph execution, yielding state updates as they occur."""
-        logger.info("Streaming DocumentAgent with %s message(s)", len(messages))
+        logger.info(
+            "Streaming DocumentAgent with %s message(s) [session=%s]", len(messages), session_id
+        )
+        thread_config = {"configurable": {"thread_id": session_id}}
         initial_state = {
             "messages": messages,
+            "session_id": session_id,
             "iteration_count": iteration_count,
             "tool_context": ToolContext(),
             "input_tokens": 0,
             "output_tokens": 0,
         }
         total_input = total_output = 0
-        for update in self.build().stream(initial_state, stream_mode="updates"):
+        for update in self.build().stream(initial_state, config=thread_config, stream_mode="updates"):
             if "agent" in update:
                 total_input += update["agent"].get("input_tokens", 0)
                 total_output += update["agent"].get("output_tokens", 0)
