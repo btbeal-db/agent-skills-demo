@@ -5,14 +5,33 @@ import app  # noqa: F401
 
 import logging
 import os
+from pathlib import Path
 
 import mlflow
 from mlflow.genai.agent_server import AgentServer
+from starlette.staticfiles import StaticFiles
+from starlette.responses import FileResponse, JSONResponse
 
 logger = logging.getLogger(__name__)
 
 agent_server = AgentServer("ResponsesAgent")
 app = agent_server.app
+
+_static_dir = Path(__file__).parent / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+    @app.get("/")
+    async def index():
+        return FileResponse(str(_static_dir / "index.html"))
+
+    @app.get("/api/workspace-host")
+    async def workspace_host():
+        host = os.getenv("DATABRICKS_HOST", "").rstrip("/")
+        if host and not host.startswith("http"):
+            host = "https://" + host
+        return JSONResponse({"host": host})
+
 mlflow.set_tracking_uri("databricks")
 exp_id = os.getenv("MLFLOW_EXPERIMENT_ID")
 if exp_id:

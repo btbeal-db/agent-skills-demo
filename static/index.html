@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #d4d0c8;
+      font-family: "Roboto", Arial, sans-serif;
+      font-size: 11px;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    /* Windows 95 window */
+    .window {
+      width: 680px;
+      max-width: 98vw;
+      background: #c0c0c0;
+      border-top: 2px solid #ffffff;
+      border-left: 2px solid #ffffff;
+      border-right: 2px solid #808080;
+      border-bottom: 2px solid #808080;
+      box-shadow: 2px 2px 0 #000;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Title bar */
+    .title-bar {
+      background: linear-gradient(to right, #000080, #1084d0);
+      color: #fff;
+      padding: 3px 4px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      user-select: none;
+    }
+
+    .title-bar-text {
+      font-weight: 700;
+      font-size: 11px;
+      letter-spacing: 0.3px;
+    }
+
+    .title-bar-controls {
+      display: flex;
+      gap: 2px;
+    }
+
+    .title-btn {
+      width: 16px;
+      height: 14px;
+      background: #c0c0c0;
+      border-top: 1px solid #fff;
+      border-left: 1px solid #fff;
+      border-right: 1px solid #404040;
+      border-bottom: 1px solid #404040;
+      font-size: 9px;
+      line-height: 12px;
+      text-align: center;
+      color: #000;
+      cursor: pointer;
+    }
+
+    .title-btn:active {
+      border-top: 1px solid #404040;
+      border-left: 1px solid #404040;
+      border-right: 1px solid #fff;
+      border-bottom: 1px solid #fff;
+    }
+
+    /* Window body */
+    .window-body {
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    /* Sunken panel for conversation */
+    .conversation-panel {
+      border-top: 2px solid #808080;
+      border-left: 2px solid #808080;
+      border-right: 2px solid #fff;
+      border-bottom: 2px solid #fff;
+      background: #fff;
+      height: 340px;
+      overflow-y: auto;
+      padding: 6px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .message {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      max-width: 100%;
+    }
+
+    .message-label {
+      font-weight: 700;
+      font-size: 10px;
+      color: #000080;
+    }
+
+    .message.agent .message-label {
+      color: #800000;
+    }
+
+    .message-text {
+      background: #f0f0f0;
+      border-top: 1px solid #808080;
+      border-left: 1px solid #808080;
+      border-right: 1px solid #fff;
+      border-bottom: 1px solid #fff;
+      padding: 4px 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.5;
+    }
+
+    .message.user .message-text {
+      background: #dde5f5;
+    }
+
+    .message.error .message-label {
+      color: #cc0000;
+    }
+
+    .message.error .message-text {
+      background: #fff0f0;
+      color: #cc0000;
+    }
+
+    .message.thinking .message-label {
+      color: #b08080;
+    }
+
+    .message.thinking .message-text {
+      color: #aaa;
+      font-style: italic;
+      background: #f8f8f8;
+    }
+
+    /* Input area */
+    .input-panel {
+      border-top: 2px solid #808080;
+      border-left: 2px solid #808080;
+      border-right: 2px solid #fff;
+      border-bottom: 2px solid #fff;
+      background: #fff;
+    }
+
+    textarea {
+      width: 100%;
+      border: none;
+      outline: none;
+      resize: none;
+      font-family: "Roboto", Arial, sans-serif;
+      font-size: 11px;
+      padding: 4px 6px;
+      background: transparent;
+      line-height: 1.5;
+    }
+
+    /* Controls row */
+    .controls-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .label {
+      white-space: nowrap;
+      color: #000;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      min-width: 0;
+      border-top: 2px solid #808080;
+      border-left: 2px solid #808080;
+      border-right: 2px solid #fff;
+      border-bottom: 2px solid #fff;
+      padding: 2px 4px;
+      font-family: "Roboto", Arial, sans-serif;
+      font-size: 11px;
+      background: #fff;
+      outline: none;
+    }
+
+    /* Win95 button */
+    button {
+      background: #c0c0c0;
+      border-top: 2px solid #fff;
+      border-left: 2px solid #fff;
+      border-right: 2px solid #404040;
+      border-bottom: 2px solid #404040;
+      padding: 3px 14px;
+      font-family: "Roboto", Arial, sans-serif;
+      font-size: 11px;
+      cursor: pointer;
+      white-space: nowrap;
+      min-width: 60px;
+    }
+
+    button:active:not(:disabled) {
+      border-top: 2px solid #404040;
+      border-left: 2px solid #404040;
+      border-right: 2px solid #fff;
+      border-bottom: 2px solid #fff;
+      padding: 4px 13px 2px 15px;
+    }
+
+    button:disabled {
+      color: #808080;
+      cursor: default;
+    }
+
+    /* Separator */
+    .separator {
+      border: none;
+      border-top: 1px solid #808080;
+      border-bottom: 1px solid #fff;
+      margin: 2px 0;
+    }
+
+    /* Status bar */
+    .status-bar {
+      border-top: 1px solid #808080;
+      padding: 3px 8px;
+      display: flex;
+      gap: 8px;
+      color: #000;
+      font-size: 10px;
+    }
+
+    .status-segment {
+      border-top: 1px solid #808080;
+      border-left: 1px solid #808080;
+      border-right: 1px solid #fff;
+      border-bottom: 1px solid #fff;
+      padding: 1px 6px;
+      display: flex;
+      gap: 4px;
+    }
+
+    .status-label {
+      color: #404040;
+    }
+
+    .status-value {
+      color: #000080;
+      font-weight: 700;
+      max-width: 300px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+
+<div class="window">
+  <!-- Title bar -->
+  <div class="title-bar">
+    <span class="title-bar-text">Agent Chat</span>
+    <div class="title-bar-controls">
+      <div class="title-btn">_</div>
+      <div class="title-btn">□</div>
+      <div class="title-btn">✕</div>
+    </div>
+  </div>
+
+  <!-- Window body -->
+  <div class="window-body">
+    <!-- Conversation history -->
+    <div class="conversation-panel" id="conversation"></div>
+
+    <!-- Input textarea -->
+    <div class="input-panel">
+      <textarea id="userInput" rows="3" placeholder="Type your message here... (Ctrl+Enter to send)"></textarea>
+    </div>
+
+    <!-- Auth token + Send -->
+    <div class="controls-row">
+      <span class="label">Auth Token (optional)</span>
+      <input type="text" id="authToken" placeholder="Bearer token..." />
+      <button id="sendBtn" onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+
+  <hr class="separator">
+
+  <!-- Status bar -->
+  <div class="status-bar">
+    <div class="status-segment">
+      <span class="status-label">Session:</span>
+      <span class="status-value" id="statusSession">—</span>
+    </div>
+    <div class="status-segment">
+      <span class="status-label">Output:</span>
+      <span class="status-value" id="statusOutput">—</span>
+    </div>
+    <div class="status-segment">
+      <span class="status-label">Status:</span>
+      <span class="status-value" id="statusReady">Ready</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Generate a UUID for this tab's conversation
+  function uuidv4() {
+    return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+      (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+    );
+  }
+
+  const conversationId = uuidv4();
+  const conversation = document.getElementById('conversation');
+  const sendBtn = document.getElementById('sendBtn');
+  const userInput = document.getElementById('userInput');
+  const authToken = document.getElementById('authToken');
+  const statusSession = document.getElementById('statusSession');
+  const statusOutput = document.getElementById('statusOutput');
+  const statusReady = document.getElementById('statusReady');
+
+  let workspaceHost = '';
+  fetch('/api/workspace-host')
+    .then(r => r.json())
+    .then(d => { workspaceHost = d.host || ''; })
+    .catch(() => {});
+
+  // Ctrl+Enter to send
+  userInput.addEventListener('keydown', function(e) {
+    if (e.ctrlKey && e.key === 'Enter') {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  // Build a Databricks volume explorer URL from a /Volumes/... path.
+  // /Volumes/<catalog>/<schema>/<volume>/...  →
+  // https://<workspace>/explore/data/volumes/<catalog>/<schema>/<volume>?volumePath=<encoded>
+  function databricksVolumeUrl(path) {
+    const base = workspaceHost;
+    if (!base) return null;
+    const parts = path.split('/').filter(Boolean); // ['Volumes', catalog, schema, volume, ...]
+    if (parts.length < 4) return null;
+    const [, catalog, schema, volume] = parts;
+    const dirPath = path.slice(0, path.lastIndexOf('/') + 1);
+    return base
+      + '/explore/data/volumes/' + catalog + '/' + schema + '/' + volume
+      + '?volumePath=' + encodeURIComponent(dirPath);
+  }
+
+  // Linkify /Volumes/... paths in agent text
+  function renderAgentText(container, text) {
+    const pathPattern = /(\/Volumes\/[^\s,;'")\]]+)/g;
+    let last = 0;
+    let match;
+    while ((match = pathPattern.exec(text)) !== null) {
+      if (match.index > last) {
+        container.appendChild(document.createTextNode(text.slice(last, match.index)));
+      }
+      const a = document.createElement('a');
+      const href = databricksVolumeUrl(match[1]);
+      a.href = href ?? match[1];
+      a.textContent = match[1];
+      a.title = 'Open in Databricks';
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.style.cssText = 'color:#000080;text-decoration:underline;';
+      container.appendChild(a);
+      last = match.index + match[0].length;
+    }
+    if (last < text.length) {
+      container.appendChild(document.createTextNode(text.slice(last)));
+    }
+  }
+
+  function appendMessage(role, text) {
+    const div = document.createElement('div');
+    div.className = 'message ' + role;
+
+    const label = document.createElement('div');
+    label.className = 'message-label';
+    label.textContent = role === 'user' ? 'You:' : role === 'agent' ? 'Agent:' : 'Error:';
+
+    const body = document.createElement('div');
+    body.className = 'message-text';
+    if (role === 'agent') {
+      renderAgentText(body, text);
+    } else {
+      body.textContent = text;
+    }
+
+    div.appendChild(label);
+    div.appendChild(body);
+    conversation.appendChild(div);
+    conversation.scrollTop = conversation.scrollHeight;
+  }
+
+  const thinkingPhrases = [
+    'Scheming',
+    'Ruminating',
+    'Exploring the seven seas',
+    'Consulting the oracle',
+    'Staring into the void',
+    'Sharpening quill',
+    'Bribing the database',
+    'Untangling spaghetti',
+    'Summoning the spreadsheet spirits',
+    'Definitely not procrastinating',
+    'Asking a wizard',
+    'Rearranging deck chairs',
+    'Negotiating with the CPU',
+    'Brewing a fresh pot of inference',
+    'Petting the GPU',
+  ];
+  let thinkingInterval = null;
+
+  function startThinking() {
+    const div = document.createElement('div');
+    div.className = 'message agent thinking';
+    div.id = 'thinkingMsg';
+
+    const label = document.createElement('div');
+    label.className = 'message-label';
+    label.textContent = 'Agent:';
+
+    const body = document.createElement('div');
+    body.className = 'message-text';
+
+    div.appendChild(label);
+    div.appendChild(body);
+    conversation.appendChild(div);
+    conversation.scrollTop = conversation.scrollHeight;
+
+    let phraseIdx = Math.floor(Math.random() * thinkingPhrases.length);
+    let dots = 1;
+    let tick = 0;
+    body.textContent = thinkingPhrases[phraseIdx] + '.';
+    thinkingInterval = setInterval(() => {
+      tick++;
+      dots = (dots % 3) + 1;
+      if (tick % 4 === 0) {
+        phraseIdx = (phraseIdx + 1) % thinkingPhrases.length;
+      }
+      body.textContent = thinkingPhrases[phraseIdx] + '.'.repeat(dots);
+      conversation.scrollTop = conversation.scrollHeight;
+    }, 500);
+  }
+
+  function stopThinking(finalText) {
+    clearInterval(thinkingInterval);
+    thinkingInterval = null;
+    const thinkingMsg = document.getElementById('thinkingMsg');
+    if (thinkingMsg) thinkingMsg.remove();
+    statusReady.textContent = finalText;
+  }
+
+  async function sendMessage() {
+    const text = userInput.value.trim();
+    if (!text) return;
+
+    // Disable input while waiting
+    sendBtn.disabled = true;
+    userInput.disabled = true;
+    statusReady.textContent = 'Working...';
+    startThinking();
+
+    appendMessage('user', text);
+    userInput.value = '';
+
+    const payload = {
+      input: [{ role: 'user', content: text }],
+      custom_inputs: { conversation_id: conversationId }
+    };
+
+    const headers = { 'Content-Type': 'application/json' };
+    const token = authToken.value.trim();
+    if (token) {
+      headers['Authorization'] = 'Bearer ' + token;
+    }
+
+    try {
+      const response = await fetch('/invocations', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        let errText;
+        try { errText = await response.text(); } catch(_) { errText = response.statusText; }
+        appendMessage('error', 'HTTP ' + response.status + ': ' + errText);
+        return;
+      }
+
+      const body = await response.json();
+
+      // Parse agent text from output
+      let agentText = '';
+      try {
+        agentText = body.output[0].content[0].text;
+      } catch(_) {
+        agentText = JSON.stringify(body.output ?? body, null, 2);
+      }
+
+      appendMessage('agent', agentText);
+
+      // Update status bar
+      const customOutputs = body.custom_outputs ?? {};
+      if (customOutputs.session_id) {
+        statusSession.textContent = customOutputs.session_id;
+      }
+      if (customOutputs.output_path) {
+        statusOutput.textContent = customOutputs.output_path;
+      }
+      stopThinking('Ready');
+
+    } catch (err) {
+      appendMessage('error', 'Request failed: ' + err.message);
+      stopThinking('Error');
+    } finally {
+      sendBtn.disabled = false;
+      userInput.disabled = false;
+      userInput.focus();
+    }
+  }
+</script>
+</body>
+</html>
