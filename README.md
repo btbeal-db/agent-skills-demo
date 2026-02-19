@@ -167,7 +167,7 @@ Step-by-step instructions for the agent…
 The app is configured by `app.yaml` and deployed via the Databricks CLI:
 
 ```bash
-databricks apps deploy --profile FEVM
+databricks apps deploy {your_app_name_here} --profile {your_profile_here}
 ```
 
 The app runs `python start_server.py` on startup. All output is written to the UC Volume configured via `AGENT_UC_VOLUME_PATH`.
