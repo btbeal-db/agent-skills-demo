@@ -65,15 +65,21 @@ class DocumentAgent:
 1. Review the available skill descriptions in the system prompt.
 2. When a request matches a skill, call `load_skill` to load the full instructions on demand.
 
-All generated files should be saved to this session's Unity Catalog Volume unless the user requests otherwise.
-- Session path: {session_output_path}
+## Storage
+
+You have full read access to the Unity Catalog Volume at: {self.config.uc_volume_path}
+
+- **To find files**: use `list_volume_files` starting from the volume root or any subdirectory. Browse freely — you are not limited to the session folder.
+- **To read files**: use `read_from_volume` with the full absolute path (e.g. `{self.config.uc_volume_path}/some/folder/file.pdf`).
+- **To save files**: always write to the current session folder using `save_to_volume`. Session path: {session_output_path}
+
+If the user references a file and you cannot locate it immediately, search the volume before giving up. If you still cannot find it after searching, ask the user to confirm the path or folder.
 
 ## Guidelines
 
 - Always load a skill's instructions before attempting to use it
 - Use progressive disclosure: keep only skill summaries in context until `load_skill` is needed
 - Follow the skill's documented workflows exactly
-- Never edit files directly in other sessions; copy them into the current session first
 - After creating a document, always save it with `save_to_volume`
 - Report the file path to the user after saving
 - If a skill isn't appropriate for the task, explain what you can and cannot do

@@ -177,9 +177,17 @@ def read_from_uc_volume(
     filename: str,
     return_base64: bool = False
 ) -> dict[str, Any]:
-    """Read a file from the Unity Catalog Volume."""
+    """Read a file from the Unity Catalog Volume.
+
+    Accepts either a bare filename (resolved under the current session folder)
+    or an absolute path (used as-is, letting the SDK or OS enforce access).
+    """
     try:
-        full_path = f"{config.session_output_path}/{filename}"
+        # Absolute paths are used directly; relative names are scoped to the session folder.
+        if filename.startswith("/"):
+            full_path = filename
+        else:
+            full_path = f"{config.session_output_path}/{filename}"
 
         if full_path.startswith("/Volumes/"):
             workspace_client = _get_workspace_client(config)
@@ -213,10 +221,14 @@ def read_from_uc_volume(
         }
 
 
-def list_uc_volume_files(config: AgentConfig) -> dict[str, Any]:
-    """List files in the session's UC Volume directory."""
+def list_uc_volume_files(config: AgentConfig, path: str | None = None) -> dict[str, Any]:
+    """List files in a UC Volume directory.
+
+    Defaults to the current session output folder. Pass an absolute path to
+    browse any other directory in the volume.
+    """
     try:
-        output_dir = config.session_output_path
+        output_dir = path.rstrip("/") if path and path.startswith("/") else config.session_output_path
 
         if output_dir.startswith("/Volumes/"):
             workspace_client = _get_workspace_client(config)
@@ -568,11 +580,11 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_from_volume",
-            "description": "Read a file from the Unity Catalog Volume.",
+            "description": "Read a file from the Unity Catalog Volume. Accepts either a bare filename (resolved relative to the current session folder) or a full absolute path (e.g. /Volumes/catalog/schema/volume/folder/file.pdf). Use a full path when the user provides one or the file lives outside the current session folder.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "filename": {"type": "string", "description": "Name of the file to read"}
+                    "filename": {"type": "string", "description": "Bare filename relative to the session folder, or a full absolute path to any file in the volume."}
                 },
                 "required": ["filename"]
             }
@@ -598,8 +610,16 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "list_volume_files",
-            "description": "List all files in the current session's output directory.",
-            "parameters": {"type": "object", "properties": {}}
+            "description": "List files in a Unity Catalog Volume directory. Defaults to the current session folder. Pass an absolute path to browse any other directory (e.g. /Volumes/catalog/schema/volume/some/folder). Use this to locate files when the user provides a partial path or you need to find a document.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to list (e.g. /Volumes/catalog/schema/volume/folder). Omit to list the current session folder."
+                    }
+                }
+            }
         }
     }
 ]
@@ -752,7 +772,7 @@ def handle_tool_call(
         return f"Failed to copy: {result['error']}"
 
     elif tool_name == "list_volume_files":
-        result = list_uc_volume_files(config)
+        result = list_uc_volume_files(config, path=tool_args.get("path"))
         if result["success"]:
             if not result["files"]:
                 return f"No files in {result['path']}"
