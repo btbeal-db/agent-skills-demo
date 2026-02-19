@@ -42,8 +42,10 @@ agent-skills-demo/
     └── get_traces.py        # Fetch a trace by ID from MLflow
 .claude/
 └── skills/
-    └── docx/
-        └── SKILL.md         # Word document skill (create, edit, analyze)
+    ├── docx/
+    │   └── SKILL.md         # Word document skill (create, edit, analyze)
+    └── pdf/
+        └── SKILL.md         # PDF skill (read, fill blanks, annotate, merge, redact)
 ```
 
 ## Prerequisites
@@ -80,10 +82,11 @@ Copy from `app.yaml` or set directly:
 | Variable | Default | Description |
 |---|---|---|
 | `AGENT_MODEL_ENDPOINT` | `databricks-gpt-5-2` | Databricks model serving endpoint |
-| `AGENT_UC_VOLUME_PATH` | _(required)_ | UC Volume root for output files |
+| `AGENT_UC_VOLUME_PATH` | _(required)_ | UC Volume root; agent can read anywhere under this path |
 | `AGENT_OUTPUT_MODE` | `auto` | `auto`, `uc_volume`, or `local` |
 | `AGENT_SKILLS_DIR` | `./.claude/skills` | Path to skills directory |
 | `AGENT_MAX_ITERATIONS` | `10` | Max LangGraph iterations per request |
+| `AGENT_LLM_TIMEOUT` | `120` | Per-LLM-call timeout in seconds |
 | `MLFLOW_EXPERIMENT_ID` | — | MLflow experiment for tracing |
 | `DATABRICKS_CONFIG_PROFILE` | — | Databricks CLI profile (local dev) |
 
@@ -132,15 +135,31 @@ uv run bin/get_traces.py <trace_id>
 | `execute_python` | Execute Python code; result available to `save_to_volume` |
 | `execute_bash` | Run shell commands; working directory persists within a turn |
 | `save_to_volume` | Save a file to the session's UC Volume directory |
-| `read_from_volume` | Read a file from the session's UC Volume directory |
+| `read_from_volume` | Read a file by filename (session folder) or full absolute path |
 | `copy_to_session` | Copy a file from another session into the current one |
-| `list_volume_files` | List files in the current session's output directory |
+| `list_volume_files` | List files in the session folder or any path in the volume |
 
 ## How Skills Work
 
 1. **Discovery** — at startup, the agent scans `.claude/skills/` for directories containing `SKILL.md`
 2. **Progressive disclosure** — only skill names and descriptions go into the system prompt; full instructions are loaded on demand via `load_skill`
 3. **Execution** — skills run via `execute_python` or `execute_bash` and write output via `save_to_volume`
+
+## Available Skills
+
+### `docx` — Word Documents
+
+Create, edit, and analyze `.docx` files using `python-docx` (new documents) or an unpack/edit XML/repack workflow (editing existing documents). Supports tracked changes, comments, images, tables, headers/footers, and page layout.
+
+**Trigger:** any mention of `.docx`, Word doc, report, memo, or letter.
+
+### `pdf` — PDF Files
+
+Read, fill, annotate, and manipulate PDF files using PyMuPDF (`fitz`). Primary use case is filling blanks in PDF templates — the skill detects whether blanks are AcroForm fields, underscore placeholders, or drawn lines and applies the appropriate fill strategy. Also supports annotations (highlight, underline, sticky notes), redaction, watermarks, page split/merge/rotate, and rendering pages to images.
+
+**Trigger:** any mention of `.pdf`, form filling, PDF annotation, or PDF page manipulation.
+
+**Note on test data:** the agent will decline to edit completed financial documents (receipts, invoices with real figures) as a fraud-prevention measure. Use synthetic test fixtures or real template files with blank fields.
 
 ### Adding a Skill
 

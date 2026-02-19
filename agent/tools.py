@@ -222,7 +222,7 @@ def read_from_uc_volume(
 
 
 def list_uc_volume_files(config: AgentConfig, path: str | None = None) -> dict[str, Any]:
-    """List files in a UC Volume directory.
+    """List files in a UC Volume directory, recursively.
 
     Defaults to the current session output folder. Pass an absolute path to
     browse any other directory in the volume.
@@ -232,17 +232,21 @@ def list_uc_volume_files(config: AgentConfig, path: str | None = None) -> dict[s
 
         if output_dir.startswith("/Volumes/"):
             workspace_client = _get_workspace_client(config)
-            files = []
-            for entry in workspace_client.files.list_directory_contents(output_dir):
-                if not entry.is_directory:
-                    files.append(
-                        {
+            files: list[dict[str, Any]] = []
+
+            def _collect_uc(dir_path: str) -> None:
+                for entry in workspace_client.files.list_directory_contents(dir_path):
+                    if entry.is_directory:
+                        _collect_uc(entry.path)
+                    else:
+                        files.append({
                             "name": entry.name,
                             "path": entry.path,
                             "size_bytes": entry.file_size,
                             "modified_time": entry.last_modified,
-                        }
-                    )
+                        })
+
+            _collect_uc(output_dir)
             return {
                 "success": True,
                 "files": files,
@@ -259,19 +263,20 @@ def list_uc_volume_files(config: AgentConfig, path: str | None = None) -> dict[s
             }
 
         files = []
-        for f in os.listdir(output_dir):
-            file_path = os.path.join(output_dir, f)
-            if os.path.isfile(file_path):
+        for root, _dirs, filenames in os.walk(output_dir):
+            for f in filenames:
+                file_path = os.path.join(root, f)
                 files.append({
                     "name": f,
                     "size_bytes": os.path.getsize(file_path),
-                    "path": file_path
+                    "path": file_path,
                 })
 
         return {
             "success": True,
             "files": files,
-            "path": output_dir
+            "path": output_dir,
+            "count": len(files),
         }
 
     except Exception as e:
@@ -625,6 +630,19 @@ AGENT_TOOLS = [
 ]
 
 
+def _looks_like_base64(s: str) -> bool:
+    """Return True if the string is almost certainly base64-encoded binary data.
+
+    Samples the first 200 non-whitespace characters. Real text always contains
+    spaces, punctuation, or characters outside the base64 alphabet; encoded
+    binary never does.
+    """
+    if len(s) < 128:
+        return False
+    sample = s[:200].replace("\n", "").replace("\r", "")
+    return all(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=" for c in sample)
+
+
 def handle_tool_call(
     config: AgentConfig,
     tool_name: str,
@@ -689,11 +707,20 @@ def handle_tool_call(
                     output += f"\nResult: <{len(result_value)} bytes>. Use save_to_volume to save."
                 else:
                     result_str = str(result_value)
-                    if len(result_str) > 500:
-                        tool_context.last_execute_result["content"] = result_str
-                        output += f"\nResult: <{len(result_str)} chars>. Use save_to_volume to save."
+                    # Always stash so save_to_volume can access it if needed.
+                    tool_context.last_execute_result["content"] = result_str
+                    if _looks_like_base64(result_str):
+                        # Encoded binary (e.g. a processed document). Don't show
+                        # the raw base64 — it's useless tokens. Just signal to save.
+                        output += f"\nResult: <{len(result_str)} chars, base64-encoded binary>. Call save_to_volume to persist."
+                    elif len(result_str) > 8000:
+                        # Very long plain text — show a truncated preview.
+                        output += (
+                            f"\nResult ({len(result_str)} chars, showing first 8000):\n"
+                            f"{result_str[:8000]}\n...(truncated)"
+                        )
                     else:
-                        output += f"\nResult: {result_str}"
+                        output += f"\nResult:\n{result_str}"
             return output
         return f"Code execution failed: {result['error']}"
 
@@ -776,8 +803,9 @@ def handle_tool_call(
         if result["success"]:
             if not result["files"]:
                 return f"No files in {result['path']}"
-            file_list = "\n".join([f"- {f['name']} ({f['size_bytes']} bytes)" for f in result["files"]])
-            return f"Files in {result['path']}:\n{file_list}"
+            # Show the full path so the agent can pass it directly to read_from_volume.
+            file_list = "\n".join([f"- {f['path']} ({f['size_bytes']} bytes)" for f in result["files"]])
+            return f"Files in {result['path']} ({result['count']} total):\n{file_list}"
         return f"Failed to list: {result['error']}"
 
     return f"Unknown tool: {tool_name}"
