@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import operator
 from collections.abc import Generator
 from typing import Annotated, Any, Literal, TypedDict
 
@@ -24,6 +25,8 @@ class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     iteration_count: int
     tool_context: ToolContext
+    input_tokens: Annotated[int, operator.add]
+    output_tokens: Annotated[int, operator.add]
 
 
 class DocumentAgent:
@@ -58,24 +61,9 @@ class DocumentAgent:
 
 1. Review the available skill descriptions in the system prompt.
 2. When a request matches a skill, call `load_skill` to load the full instructions on demand.
-3. `load_skill` returns the skill directory and scripts path — use these absolute paths when running helper scripts.
-4. If a source file is in another session, first use `copy_to_session` to duplicate it into the current session folder.
-5. Use `execute_python` for Python-based operations (python-docx, mammoth, PyMuPDF).
-6. Use `execute_bash` for running helper scripts (unpack, pack, validate, comment) and shell commands. The bash working directory persists across calls within a session.
-7. Use `save_to_volume` to save generated files to Unity Catalog for the user to access.
-8. Use `list_volume_files` to show the user what files have been created.
 
-## File Operations
-
-- The `execute_bash` tool provides a persistent working directory for intermediate files within a session.
-- To process a file from UC Volume: use `read_from_volume`, then `execute_python` to write bytes to the bash working directory, then `execute_bash` for processing with scripts.
-- To save a processed file to UC Volume: use `execute_python` to read the file bytes and base64-encode as `result`, then `save_to_volume`.
-
-## File Output
-
-All generated files are saved to Unity Catalog Volume:
+All generated files should be saved to this session's Unity Catalog Volume unless the user requests otherwise.
 - Session path: {self.config.session_output_path}
-- Use `save_to_volume` with base64-encoded content
 
 ## Guidelines
 
@@ -103,12 +91,20 @@ All generated files are saved to Unity Catalog Volume:
         logger.info("[agent_node] Iteration %s with %s message(s)", iteration + 1, len(messages))
         response = self.llm.invoke(messages, tools=AGENT_TOOLS)
         has_tools = bool(response.tool_calls) if hasattr(response, "tool_calls") else False
-        logger.info("[agent_node] LLM responded. tool_calls=%s", has_tools)
+        usage = response.usage_metadata or {}
+        logger.info(
+            "[agent_node] LLM responded. tool_calls=%s | tokens: input=%s, output=%s",
+            has_tools,
+            usage.get("input_tokens", "n/a"),
+            usage.get("output_tokens", "n/a"),
+        )
 
         return {
             "messages": [response],
             "iteration_count": iteration + 1,
             "tool_context": tool_context,
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
         }
 
     def tool_node(self, state: AgentState) -> AgentState:
@@ -184,11 +180,19 @@ All generated files are saved to Unity Catalog Volume:
     def invoke(self, messages: list[BaseMessage], iteration_count: int = 0):
         """Invoke the agent graph with the provided messages."""
         logger.info("Invoking DocumentAgent with %s message(s)", len(messages))
-        return self.build().invoke({
+        final_state = self.build().invoke({
             "messages": messages,
             "iteration_count": iteration_count,
             "tool_context": ToolContext(),
+            "input_tokens": 0,
+            "output_tokens": 0,
         })
+        logger.info(
+            "[agent] Run complete. Total tokens — input=%s, output=%s",
+            final_state.get("input_tokens", "n/a"),
+            final_state.get("output_tokens", "n/a"),
+        )
+        return final_state
 
     def stream(self, messages: list[BaseMessage], iteration_count: int = 0) -> Generator[dict[str, Any], None, None]:
         """Stream the agent graph execution, yielding state updates as they occur."""
@@ -197,6 +201,17 @@ All generated files are saved to Unity Catalog Volume:
             "messages": messages,
             "iteration_count": iteration_count,
             "tool_context": ToolContext(),
+            "input_tokens": 0,
+            "output_tokens": 0,
         }
+        total_input = total_output = 0
         for update in self.build().stream(initial_state, stream_mode="updates"):
+            if "agent" in update:
+                total_input += update["agent"].get("input_tokens", 0)
+                total_output += update["agent"].get("output_tokens", 0)
             yield update
+        logger.info(
+            "[agent] Run complete. Total tokens — input=%s, output=%s",
+            total_input,
+            total_output,
+        )
