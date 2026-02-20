@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Generator
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
 from mlflow.pyfunc import ResponsesAgent
 from mlflow.types.responses import (
     ResponsesAgentRequest,
@@ -23,10 +23,9 @@ from .graph import DocumentAgent
 class DocumentResponsesAgent(ResponsesAgent):
     """MLflow ResponsesAgent wrapper for DocumentAgent."""
 
-    def __init__(self, config: AgentConfig | None = None, chunk_size: int = 50):
+    def __init__(self, config: AgentConfig | None = None):
         self.config = config or AgentConfig.from_env()
         self.document_agent = DocumentAgent(self.config)
-        self.chunk_size = chunk_size
 
     @staticmethod
     def _extract_text_content(content: Any) -> str:
@@ -157,31 +156,28 @@ class DocumentResponsesAgent(ResponsesAgent):
             lc_messages = self._to_langchain_messages(request.input)
             item_id = "msg_" + session_id
             final_content = ""
-            streamed_content_length = 0
 
-            for update in self.document_agent.stream(
+            for msg_chunk, metadata in self.document_agent.stream(
                 lc_messages, session_id=session_id, iteration_count=0
             ):
-                if "agent" in update:
-                    agent_update = update["agent"]
-                    messages = agent_update.get("messages", [])
+                # Only forward text tokens from the agent node's final responses.
+                # Skip tool-calling chunks (they have tool_call_chunks, not content)
+                # and skip ToolMessages entirely.
+                if (
+                    isinstance(msg_chunk, AIMessageChunk)
+                    and metadata.get("langgraph_node") == "agent"
+                    and msg_chunk.content
+                    and not getattr(msg_chunk, "tool_call_chunks", None)
+                ):
+                    delta = str(msg_chunk.content)
+                    final_content += delta
+                    yield ResponsesAgentStreamEvent(
+                        type="response.output_text.delta",
+                        item_id=item_id,
+                        delta=delta,
+                    )
 
-                    for message in messages:
-                        if isinstance(message, AIMessage) and message.content:
-                            content = str(message.content)
-                            final_content = content
-
-                            new_content = content[streamed_content_length:]
-                            if new_content:
-                                for i in range(0, len(new_content), self.chunk_size):
-                                    chunk = new_content[i : i + self.chunk_size]
-                                    yield ResponsesAgentStreamEvent(
-                                        type="response.output_text.delta",
-                                        item_id=item_id,
-                                        delta=chunk,
-                                    )
-                                streamed_content_length = len(content)
-
+            session_config = dataclasses.replace(self.config, session_id=session_id)
             yield ResponsesAgentStreamEvent(
                 type="response.output_item.done",
                 item={
@@ -189,6 +185,11 @@ class DocumentResponsesAgent(ResponsesAgent):
                     "type": "message",
                     "role": "assistant",
                     "content": [{"type": "output_text", "text": final_content}],
+                    "custom_outputs": {
+                        "session_id": session_id,
+                        "thread_id": thread_id,
+                        "output_path": session_config.session_output_path,
+                    },
                 },
             )
         except Exception as e:

@@ -536,10 +536,11 @@
   let dotInterval    = null;
   let phraseInterval = null;
 
+  // Creates the agent message bubble in "thinking" state.
+  // Returns { div, body } so the caller can update it in-place later.
   function startThinking() {
     const div = document.createElement('div');
     div.className = 'message agent thinking';
-    div.id = 'thinkingMsg';
 
     const label = document.createElement('div');
     label.className = 'message-label';
@@ -557,14 +558,12 @@
     let dots = 1;
     body.textContent = thinkingPhrases[phraseIdx] + '.';
 
-    // Dots animate at 500ms
     dotInterval = setInterval(() => {
       dots = (dots % 3) + 1;
       body.textContent = thinkingPhrases[phraseIdx] + '.'.repeat(dots);
       conversation.scrollTop = conversation.scrollHeight;
     }, 500);
 
-    // Phrase changes every 4s, randomly (never repeats the same one back-to-back)
     phraseInterval = setInterval(() => {
       let next;
       do { next = Math.floor(Math.random() * thinkingPhrases.length); }
@@ -573,15 +572,16 @@
       dots = 1;
       body.textContent = thinkingPhrases[phraseIdx] + '.';
     }, 4000);
+
+    return { div, body };
   }
 
-  function stopThinking(finalText) {
+  // Stops the thinking animation. Does NOT remove the div — caller owns the div.
+  function stopThinking(finalStatus) {
     clearInterval(dotInterval);
     clearInterval(phraseInterval);
     dotInterval = phraseInterval = null;
-    const thinkingMsg = document.getElementById('thinkingMsg');
-    if (thinkingMsg) thinkingMsg.remove();
-    statusReady.textContent = finalText;
+    statusReady.textContent = finalStatus;
   }
 
   async function sendMessage() {
@@ -593,14 +593,19 @@
     userInput.disabled = true;
     statusReady.textContent = 'Working...';
 
-    // User message first, then thinking bubble below it
     appendMessage('user', text);
     userInput.value = '';
-    startThinking();
+
+    // Agent message bubble appears immediately in thinking state.
+    // We update it in-place — no disappear/reappear gap.
+    const { div: agentDiv, body: agentMsgBody } = startThinking();
+    let agentText = '';
+    let thinkingActive = true;
 
     const payload = {
       input: [{ role: 'user', content: text }],
-      custom_inputs: { conversation_id: conversationId }
+      custom_inputs: { conversation_id: conversationId },
+      stream: true,
     };
 
     const headers = { 'Content-Type': 'application/json' };
@@ -621,32 +626,78 @@
         let errText;
         try { errText = await response.text(); } catch(_) { errText = response.statusText; }
         stopThinking('Error');
+        agentDiv.remove();
         appendMessage('error', 'HTTP ' + response.status + ': ' + errText);
         return;
       }
 
-      const body = await response.json();
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
 
-      let agentText = '';
-      try {
-        agentText = body.output[0].content[0].text;
-      } catch(_) {
-        agentText = JSON.stringify(body.output ?? body, null, 2);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (!data || data === '[DONE]') continue;
+
+          let event;
+          try { event = JSON.parse(data); } catch(_) { continue; }
+
+          if (event.type === 'response.output_text.delta' && event.delta) {
+            // First token: stop thinking animation, switch bubble to content mode
+            if (thinkingActive) {
+              stopThinking('Working...');
+              agentDiv.classList.remove('thinking');
+              thinkingActive = false;
+            }
+            agentText += event.delta;
+            renderAgentText(agentMsgBody, agentText);
+            conversation.scrollTop = conversation.scrollHeight;
+
+          } else if (event.type === 'response.output_item.done') {
+            // Update status bar
+            const customOutputs = event.item?.custom_outputs ?? {};
+            if (customOutputs.session_id)  statusSession.textContent = customOutputs.session_id;
+            if (customOutputs.output_path) statusOutput.textContent  = customOutputs.output_path;
+
+            // Fallback: if no delta events arrived, populate from the final item text
+            if (thinkingActive || !agentText) {
+              const itemText = event.item?.content?.[0]?.text ?? '';
+              if (itemText) {
+                stopThinking('Ready');
+                agentDiv.classList.remove('thinking');
+                thinkingActive = false;
+                agentText = itemText;
+                renderAgentText(agentMsgBody, itemText);
+                conversation.scrollTop = conversation.scrollHeight;
+              }
+            }
+          }
+        }
       }
 
-      stopThinking('Ready');
-      appendMessage('agent', agentText);
-
-      const customOutputs = body.custom_outputs ?? {};
-      if (customOutputs.session_id)  statusSession.textContent = customOutputs.session_id;
-      if (customOutputs.output_path) statusOutput.textContent  = customOutputs.output_path;
+      // Clean up thinking state if still active (e.g. empty response)
+      if (thinkingActive) {
+        stopThinking('Ready');
+        agentDiv.classList.remove('thinking');
+        agentMsgBody.textContent = '';
+      } else {
+        stopThinking('Ready');
+      }
 
     } catch (err) {
+      stopThinking(err.name === 'AbortError' ? 'Stopped' : 'Error');
+      agentDiv.classList.remove('thinking');
+      agentMsgBody.textContent = '';
       if (err.name === 'AbortError') {
-        stopThinking('Stopped');
+        agentDiv.remove();
         appendMessage('error', 'Request stopped by user.');
       } else {
-        stopThinking('Error');
+        agentDiv.remove();
         appendMessage('error', 'Request failed: ' + err.message);
       }
     } finally {

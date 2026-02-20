@@ -10,6 +10,7 @@ from typing import Annotated, Any, Literal, TypedDict
 
 import mlflow
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
@@ -103,7 +104,7 @@ If the user references a file and you cannot locate it immediately, search the v
             return messages
         return [SystemMessage(content=self._build_system_prompt(session_output_path)), *messages]
 
-    def agent_node(self, state: AgentState) -> AgentState:
+    def agent_node(self, state: AgentState, config: RunnableConfig) -> AgentState:
         """Main agent node - calls the LLM with tools."""
         session_id = state.get("session_id") or self.config.session_id
         request_config = self._get_request_config(session_id)
@@ -113,7 +114,12 @@ If the user references a file and you cannot locate it immediately, search the v
         tool_context = ToolContext.from_dict(state.get("tool_context") or {})
 
         logger.info("[agent_node] Iteration %s with %s message(s)", iteration + 1, len(messages))
-        response = self.llm.invoke(messages, tools=AGENT_TOOLS)
+        # Pass LangGraph's config so its streaming callbacks can forward individual
+        # tokens as they arrive (stream_mode="messages"). Accumulate chunks into a
+        # final message for the state update.
+        response = None
+        for chunk in self.llm.stream(messages, tools=AGENT_TOOLS, config=config):
+            response = chunk if response is None else response + chunk
         has_tools = bool(response.tool_calls) if hasattr(response, "tool_calls") else False
         usage = response.usage_metadata or {}
         logger.info(
@@ -236,8 +242,13 @@ If the user references a file and you cannot locate it immediately, search the v
 
     def stream(
         self, messages: list[BaseMessage], session_id: str, iteration_count: int = 0
-    ) -> Generator[dict[str, Any], None, None]:
-        """Stream the agent graph execution, yielding state updates as they occur."""
+    ) -> Generator[tuple[Any, dict[str, Any]], None, None]:
+        """Stream the agent graph execution at the message/token level.
+
+        Yields (chunk, metadata) tuples from LangGraph's messages streaming mode.
+        Each chunk is a BaseMessageChunk; metadata includes 'langgraph_node' so
+        callers can filter by node name.
+        """
         logger.info(
             "Streaming DocumentAgent with %s message(s) [session=%s]", len(messages), session_id
         )
@@ -250,14 +261,5 @@ If the user references a file and you cannot locate it immediately, search the v
             "input_tokens": 0,
             "output_tokens": 0,
         }
-        total_input = total_output = 0
-        for update in self.build().stream(initial_state, config=thread_config, stream_mode="updates"):
-            if "agent" in update:
-                total_input += update["agent"].get("input_tokens", 0)
-                total_output += update["agent"].get("output_tokens", 0)
-            yield update
-        logger.info(
-            "[agent] Run complete. Total tokens — input=%s, output=%s",
-            total_input,
-            total_output,
-        )
+        yield from self.build().stream(initial_state, config=thread_config, stream_mode="messages")
+        logger.info("[agent] Streaming run complete.")
