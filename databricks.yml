@@ -47,11 +47,6 @@ resources:
             securable_type: VOLUME
             securable_full_name: hls_amer_catalog.appeals-review.created_docs_${bundle.target}
             permission: WRITE_VOLUME
-        - name: uc-volume-read
-          uc_securable:
-            securable_type: VOLUME
-            securable_full_name: hls_amer_catalog.appeals-review.created_docs_${bundle.target}
-            permission: READ_VOLUME
 
 targets:
   dev:
