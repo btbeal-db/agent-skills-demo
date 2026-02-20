@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import operator
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
 from typing import Annotated, Any, Literal, TypedDict
 
 import mlflow
@@ -47,6 +47,7 @@ class DocumentAgent:
         self.skill_context = build_skill_context(self.config)
         self._checkpointer = MemorySaver()
         self._compiled_graph = None
+        self._async_compiled_graph = None
 
     def _create_workspace_client(self) -> WorkspaceClient:
         """Create workspace client using runtime identity or local profile."""
@@ -124,6 +125,37 @@ If the user references a file and you cannot locate it immediately, search the v
         usage = response.usage_metadata or {}
         logger.info(
             "[agent_node] LLM responded. tool_calls=%s | tokens: input=%s, output=%s",
+            has_tools,
+            usage.get("input_tokens", "n/a"),
+            usage.get("output_tokens", "n/a"),
+        )
+
+        return {
+            "messages": [response],
+            "iteration_count": iteration + 1,
+            "tool_context": tool_context.to_dict(),
+            "session_id": session_id,
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+        }
+
+    async def agent_node_async(self, state: AgentState, config: RunnableConfig) -> AgentState:
+        """Async version of agent_node — lets the event loop yield between tokens."""
+        session_id = state.get("session_id") or self.config.session_id
+        request_config = self._get_request_config(session_id)
+
+        messages = self._ensure_system_prompt(state["messages"], request_config.session_output_path)
+        iteration = state.get("iteration_count", 0)
+        tool_context = ToolContext.from_dict(state.get("tool_context") or {})
+
+        logger.info("[agent_node_async] Iteration %s with %s message(s)", iteration + 1, len(messages))
+        response = None
+        async for chunk in self.llm.astream(messages, tools=AGENT_TOOLS, config=config):
+            response = chunk if response is None else response + chunk
+        has_tools = bool(response.tool_calls) if hasattr(response, "tool_calls") else False
+        usage = response.usage_metadata or {}
+        logger.info(
+            "[agent_node_async] LLM responded. tool_calls=%s | tokens: input=%s, output=%s",
             has_tools,
             usage.get("input_tokens", "n/a"),
             usage.get("output_tokens", "n/a"),
@@ -216,6 +248,23 @@ If the user references a file and you cannot locate it immediately, search the v
         self._compiled_graph = workflow.compile(checkpointer=self._checkpointer)
         return self._compiled_graph
 
+    def build_async(self):
+        """Build and compile the async LangGraph workflow (uses async agent_node)."""
+        if self._async_compiled_graph is not None:
+            return self._async_compiled_graph
+
+        logger.info("Compiling async DocumentAgent graph")
+        workflow = StateGraph(AgentState)
+        workflow.add_node("agent", self.agent_node_async)
+        workflow.add_node("tools", self.tool_node)
+        workflow.set_entry_point("agent")
+        workflow.add_conditional_edges("agent", self.should_continue, {"tools": "tools", "end": END})
+        workflow.add_edge("tools", "agent")
+
+        # Share the same checkpointer so invoke() and astream() see the same history.
+        self._async_compiled_graph = workflow.compile(checkpointer=self._checkpointer)
+        return self._async_compiled_graph
+
     def invoke(self, messages: list[BaseMessage], session_id: str, iteration_count: int = 0):
         """Invoke the agent graph with the provided messages."""
         logger.info(
@@ -240,17 +289,16 @@ If the user references a file and you cannot locate it immediately, search the v
         )
         return final_state
 
-    def stream(
+    async def astream(
         self, messages: list[BaseMessage], session_id: str, iteration_count: int = 0
-    ) -> Generator[tuple[Any, dict[str, Any]], None, None]:
-        """Stream the agent graph execution at the message/token level.
+    ) -> AsyncGenerator[tuple[Any, dict[str, Any]], None]:
+        """Async-stream the agent graph at the token level.
 
         Yields (chunk, metadata) tuples from LangGraph's messages streaming mode.
-        Each chunk is a BaseMessageChunk; metadata includes 'langgraph_node' so
-        callers can filter by node name.
+        Uses the async graph so the event loop can interleave between tokens.
         """
         logger.info(
-            "Streaming DocumentAgent with %s message(s) [session=%s]", len(messages), session_id
+            "Async-streaming DocumentAgent with %s message(s) [session=%s]", len(messages), session_id
         )
         thread_config = {"configurable": {"thread_id": session_id}}
         initial_state = {
@@ -261,5 +309,8 @@ If the user references a file and you cannot locate it immediately, search the v
             "input_tokens": 0,
             "output_tokens": 0,
         }
-        yield from self.build().stream(initial_state, config=thread_config, stream_mode="messages")
-        logger.info("[agent] Streaming run complete.")
+        async for item in self.build_async().astream(
+            initial_state, config=thread_config, stream_mode="messages"
+        ):
+            yield item
+        logger.info("[agent] Async streaming run complete.")

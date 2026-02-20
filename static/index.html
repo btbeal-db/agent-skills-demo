@@ -536,11 +536,10 @@
   let dotInterval    = null;
   let phraseInterval = null;
 
-  // Creates the agent message bubble in "thinking" state.
-  // Returns { div, body } so the caller can update it in-place later.
   function startThinking() {
     const div = document.createElement('div');
     div.className = 'message agent thinking';
+    div.id = 'thinkingMsg';
 
     const label = document.createElement('div');
     label.className = 'message-label';
@@ -558,12 +557,14 @@
     let dots = 1;
     body.textContent = thinkingPhrases[phraseIdx] + '.';
 
+    // Dots animate at 500ms
     dotInterval = setInterval(() => {
       dots = (dots % 3) + 1;
       body.textContent = thinkingPhrases[phraseIdx] + '.'.repeat(dots);
       conversation.scrollTop = conversation.scrollHeight;
     }, 500);
 
+    // Phrase changes every 4s, never repeating back-to-back
     phraseInterval = setInterval(() => {
       let next;
       do { next = Math.floor(Math.random() * thinkingPhrases.length); }
@@ -572,16 +573,15 @@
       dots = 1;
       body.textContent = thinkingPhrases[phraseIdx] + '.';
     }, 4000);
-
-    return { div, body };
   }
 
-  // Stops the thinking animation. Does NOT remove the div — caller owns the div.
-  function stopThinking(finalStatus) {
+  function stopThinking(finalText) {
     clearInterval(dotInterval);
     clearInterval(phraseInterval);
     dotInterval = phraseInterval = null;
-    statusReady.textContent = finalStatus;
+    const thinkingMsg = document.getElementById('thinkingMsg');
+    if (thinkingMsg) thinkingMsg.remove();
+    statusReady.textContent = finalText;
   }
 
   async function sendMessage() {
@@ -595,18 +595,7 @@
 
     appendMessage('user', text);
     userInput.value = '';
-
-    // Agent message bubble appears immediately in thinking state.
-    // We update it in-place — no disappear/reappear gap.
-    const { div: agentDiv, body: agentMsgBody } = startThinking();
-    let agentText = '';
-    let thinkingActive = true;
-
-    const payload = {
-      input: [{ role: 'user', content: text }],
-      custom_inputs: { conversation_id: conversationId },
-      stream: true,
-    };
+    startThinking();
 
     const headers = { 'Content-Type': 'application/json' };
     const token = authToken.value.trim();
@@ -614,11 +603,19 @@
 
     currentController = new AbortController();
 
+    // agentMsgBody is created on the first streamed token
+    let agentMsgBody = null;
+    let agentText = '';
+
     try {
       const response = await fetch('/invocations', {
         method: 'POST',
         headers,
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          input: [{ role: 'user', content: text }],
+          custom_inputs: { conversation_id: conversationId },
+          stream: true,
+        }),
         signal: currentController.signal,
       });
 
@@ -626,7 +623,6 @@
         let errText;
         try { errText = await response.text(); } catch(_) { errText = response.statusText; }
         stopThinking('Error');
-        agentDiv.remove();
         appendMessage('error', 'HTTP ' + response.status + ': ' + errText);
         return;
       }
@@ -648,56 +644,50 @@
           try { event = JSON.parse(data); } catch(_) { continue; }
 
           if (event.type === 'response.output_text.delta' && event.delta) {
-            // First token: stop thinking animation, switch bubble to content mode
-            if (thinkingActive) {
+            // First token: swap thinking bubble for live agent message
+            if (!agentMsgBody) {
               stopThinking('Working...');
-              agentDiv.classList.remove('thinking');
-              thinkingActive = false;
+              const div = document.createElement('div');
+              div.className = 'message agent';
+              const lbl = document.createElement('div');
+              lbl.className = 'message-label';
+              lbl.textContent = 'Agent:';
+              agentMsgBody = document.createElement('div');
+              agentMsgBody.className = 'message-text';
+              div.appendChild(lbl);
+              div.appendChild(agentMsgBody);
+              conversation.appendChild(div);
             }
             agentText += event.delta;
             renderAgentText(agentMsgBody, agentText);
             conversation.scrollTop = conversation.scrollHeight;
 
           } else if (event.type === 'response.output_item.done') {
-            // Update status bar
             const customOutputs = event.item?.custom_outputs ?? {};
             if (customOutputs.session_id)  statusSession.textContent = customOutputs.session_id;
             if (customOutputs.output_path) statusOutput.textContent  = customOutputs.output_path;
 
-            // Fallback: if no delta events arrived, populate from the final item text
-            if (thinkingActive || !agentText) {
+            // Fallback if no delta events arrived (e.g. non-streaming endpoint)
+            if (!agentMsgBody) {
               const itemText = event.item?.content?.[0]?.text ?? '';
               if (itemText) {
                 stopThinking('Ready');
-                agentDiv.classList.remove('thinking');
-                thinkingActive = false;
+                appendMessage('agent', itemText);
                 agentText = itemText;
-                renderAgentText(agentMsgBody, itemText);
-                conversation.scrollTop = conversation.scrollHeight;
               }
             }
           }
         }
       }
 
-      // Clean up thinking state if still active (e.g. empty response)
-      if (thinkingActive) {
-        stopThinking('Ready');
-        agentDiv.classList.remove('thinking');
-        agentMsgBody.textContent = '';
-      } else {
-        stopThinking('Ready');
-      }
+      stopThinking('Ready');
 
     } catch (err) {
-      stopThinking(err.name === 'AbortError' ? 'Stopped' : 'Error');
-      agentDiv.classList.remove('thinking');
-      agentMsgBody.textContent = '';
       if (err.name === 'AbortError') {
-        agentDiv.remove();
+        stopThinking('Stopped');
         appendMessage('error', 'Request stopped by user.');
       } else {
-        agentDiv.remove();
+        stopThinking('Error');
         appendMessage('error', 'Request failed: ' + err.message);
       }
     } finally {

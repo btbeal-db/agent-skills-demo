@@ -1,7 +1,7 @@
 """Agent handlers for MLflow Agent Server."""
 
 import logging
-from collections.abc import Generator
+from collections.abc import AsyncGenerator
 
 import mlflow
 from mlflow.genai.agent_server import (
@@ -19,7 +19,7 @@ from agent import AgentConfig, DocumentResponsesAgent
 logger = logging.getLogger(__name__)
 
 # Enable LangChain autologging so model/tool planning traces are captured in MLflow.
-mlflow.langchain.autolog(log_traces=True, run_tracer_inline=True)
+mlflow.langchain.autolog(log_traces=True, run_tracer_inline=False)
 
 _config = AgentConfig.from_env()
 # Databricks App serving should always persist outputs to UC Volume.
@@ -40,8 +40,9 @@ def handle_invoke(request: ResponsesAgentRequest) -> ResponsesAgentResponse:
 
 
 @stream()
-def handle_stream(
+async def handle_stream(
     request: ResponsesAgentRequest,
-) -> Generator[ResponsesAgentStreamEvent, None, None]:
-    """Handle streaming Responses API requests."""
-    yield from _responses_agent.predict_stream(request)
+) -> AsyncGenerator[ResponsesAgentStreamEvent, None]:
+    """Handle streaming Responses API requests via async generator."""
+    async for event in _responses_agent.predict_stream(request):
+        yield event

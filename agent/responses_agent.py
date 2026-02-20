@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import uuid
-from collections.abc import Generator
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
@@ -133,10 +133,10 @@ class DocumentResponsesAgent(ResponsesAgent):
         except Exception as e:
             return self._build_response(f"Error: {str(e)}")
 
-    def predict_stream(
+    async def predict_stream(
         self, request: ResponsesAgentRequest
-    ) -> Generator[ResponsesAgentStreamEvent, None, None]:
-        """Handle streaming invocation using LangGraph's real streaming."""
+    ) -> AsyncGenerator[ResponsesAgentStreamEvent, None]:
+        """Handle streaming invocation using LangGraph's async streaming."""
         if not request.input:
             yield ResponsesAgentStreamEvent(
                 type="response.output_item.done",
@@ -157,12 +157,9 @@ class DocumentResponsesAgent(ResponsesAgent):
             item_id = "msg_" + session_id
             final_content = ""
 
-            for msg_chunk, metadata in self.document_agent.stream(
+            async for msg_chunk, metadata in self.document_agent.astream(
                 lc_messages, session_id=session_id, iteration_count=0
             ):
-                # Only forward text tokens from the agent node's final responses.
-                # Skip tool-calling chunks (they have tool_call_chunks, not content)
-                # and skip ToolMessages entirely.
                 if (
                     isinstance(msg_chunk, AIMessageChunk)
                     and metadata.get("langgraph_node") == "agent"
