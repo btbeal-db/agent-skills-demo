@@ -65,8 +65,13 @@ class DocumentAgent:
 
 ## How to Use Skills
 
-1. Review the available skill descriptions in the system prompt.
-2. When a request matches a skill, call `load_skill` to load the full instructions on demand.
+**REQUIRED**: Before writing any code or taking any action related to a skill, you MUST call `load_skill` first to get the exact libraries, workflows, and code patterns to use. Do not rely on general knowledge — the skill file contains the only approved approach for this environment.
+
+1. Identify which skill applies (docx, pdf, etc.).
+2. Call `load_skill("<skill_name>")` to load the full instructions.
+3. Follow those instructions exactly — do not substitute libraries or approaches not mentioned there.
+
+If a skill was already loaded earlier in this conversation, you do not need to load it again.
 
 ## Storage
 
@@ -80,9 +85,8 @@ If the user references a file and you cannot locate it immediately, search the v
 
 ## Guidelines
 
-- Always load a skill's instructions before attempting to use it
-- Use progressive disclosure: keep only skill summaries in context until `load_skill` is needed
-- Follow the skill's documented workflows exactly
+- Never attempt a skill-related task without first calling `load_skill` (unless already loaded this conversation)
+- Follow the skill's documented workflows and libraries exactly — do not improvise
 - After creating a document, always save it with `save_to_volume`
 - Report the file path to the user after saving
 - If a skill isn't appropriate for the task, explain what you can and cannot do
