@@ -1,5 +1,11 @@
 # Agent Skills Demo
 
+## Short Demo of Capabilities
+
+https://github.com/user-attachments/assets/10a82328-3e38-4a91-9511-c8aee043324c
+
+(**Note:** inference times are sped up for the sake of demonstration)
+
 A **Databricks App** serving a multi-turn LangGraph agent with [Claude Agent Skills](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview). The agent uses filesystem-based skills for progressive disclosure and saves all output to Unity Catalog Volumes.
 
 ## Architecture
